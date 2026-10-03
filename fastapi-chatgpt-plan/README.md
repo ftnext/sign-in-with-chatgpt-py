@@ -336,3 +336,16 @@ Verified with fastapi 0.142, uvicorn 0.54, httpx 0.28, openai 3.24, PyJWT
 This package is released independently using tags named
 `fastapi-chatgpt-plan-<version>`; the version must match `project.version`
 in `pyproject.toml`. The first release tag is `fastapi-chatgpt-plan-0.1.0`.
+
+## Release
+
+Publish a GitHub Release tagged `fastapi-chatgpt-plan-<version>` matching the
+version in `pyproject.toml`. `publish-fastapi.yml` tests Python 3.11–3.14, builds
+the wheel and sdist, and publishes them to PyPI using Trusted Publishing.
+Before the first release, configure the PyPI project (or pending publisher)
+with owner `ftnext`, repository `sign-in-with-chatgpt-py`, workflow
+`publish-fastapi.yml`, and environment `release`. No API token is required.
+
+Authenticated responses renew the browser cookie and server session together.
+Expired sessions and OAuth transactions are purged when a new session is created.
+The model cache used by inference expires after ten minutes.

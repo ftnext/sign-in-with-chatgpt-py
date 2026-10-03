@@ -2,17 +2,20 @@ name: Test
 
 on:
   push:
+    branches: [main]
     paths:
     - 'llm-chatgpt-plan/**'
     - 'fastapi-chatgpt-plan/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
+    - '.github/workflows/publish-fastapi.yml'
   pull_request:
     paths:
     - 'llm-chatgpt-plan/**'
     - 'fastapi-chatgpt-plan/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
+    - '.github/workflows/publish-fastapi.yml'
 
 permissions:
   contents: read
