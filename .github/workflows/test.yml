@@ -4,26 +4,30 @@ on:
   push:
     paths:
     - 'llm-chatgpt-plan/**'
+    - 'fastapi-chatgpt-plan/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
   pull_request:
     paths:
     - 'llm-chatgpt-plan/**'
+    - 'fastapi-chatgpt-plan/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
-
-defaults:
-  run:
-    working-directory: llm-chatgpt-plan
 
 permissions:
   contents: read
 
 jobs:
   test:
+    name: ${{ matrix.package }} / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
     strategy:
+      fail-fast: false
       matrix:
+        package: ["llm-chatgpt-plan", "fastapi-chatgpt-plan"]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,7 +36,7 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
         cache: pip
-        cache-dependency-path: llm-chatgpt-plan/pyproject.toml
+        cache-dependency-path: ${{ matrix.package }}/pyproject.toml
     - name: Install dependencies
       run: |
         pip install -e . --group dev
