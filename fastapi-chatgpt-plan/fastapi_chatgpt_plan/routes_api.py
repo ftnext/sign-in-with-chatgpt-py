@@ -30,13 +30,12 @@ def require_current(state, connection):
         )
 
 
-@router.get("/api/models")
-async def list_models(request: Request):
-    connection = await ensure_access_token(request)
+async def refresh_models(request: Request, connection) -> list:
     state = get_state(request)
-    http = request.app.state.http
     try:
-        models = await client.fetch_models(http, connection.access_token)
+        models = await client.fetch_models(
+            request.app.state.http, connection.access_token
+        )
     except AuthError:
         connection.needs_reauth = True
         raise PublicError("reauthorization_required", "Sign in again to continue.", 401)
@@ -47,7 +46,17 @@ async def list_models(request: Request):
         "fetched_at": time.time(),
         "models": models,
     }
-    return {"models": models}
+    return models
+
+
+def _has_model(models, slug) -> bool:
+    return slug in {model["slug"] for model in models}
+
+
+@router.get("/api/models")
+async def list_models(request: Request):
+    connection = await ensure_access_token(request)
+    return {"models": await refresh_models(request, connection)}
 
 
 async def _limited_body(request: Request) -> bytes:
@@ -93,22 +102,9 @@ async def responses(request: Request):
     http = request.app.state.http
 
     models = check_model_cache(state, connection)
-    if models is None:
-        try:
-            models = await client.fetch_models(http, connection.access_token)
-        except AuthError:
-            connection.needs_reauth = True
-            raise PublicError(
-                "reauthorization_required", "Sign in again to continue.", 401
-            )
-        require_current(state, connection)
-        state.models_cache = {
-            "client_id": connection.client_id,
-            "subject": connection.subject,
-            "fetched_at": time.time(),
-            "models": models,
-        }
-    if payload.model not in {model["slug"] for model in models}:
+    if models is None or not _has_model(models, payload.model):
+        models = await refresh_models(request, connection)
+    if not _has_model(models, payload.model):
         raise PublicError(
             "unknown_model",
             "The requested model is not in the available model list.",

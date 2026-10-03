@@ -2,6 +2,7 @@
 
 import contextlib
 import secrets
+import time
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -18,7 +19,7 @@ from .guards import (
     verify_origin,
 )
 from .oauth import IDENTITY_SCOPES, PLAN_SCOPE, PLAN_SCOPES
-from .sessions import SESSION_COOKIE, SESSION_TTL_SECONDS, Connection
+from .sessions import SESSION_COOKIE, Connection
 
 router = APIRouter()
 
@@ -78,7 +79,7 @@ def set_session_cookie(response, session) -> None:
     response.set_cookie(
         SESSION_COOKIE,
         session.id,
-        max_age=SESSION_TTL_SECONDS,
+        max_age=max(0, int(session.expires_at - time.time())),
         httponly=True,
         samesite="lax",
         secure=False,
@@ -240,6 +241,10 @@ async def callback(request: Request):
     )
 
     def commit():
+        if registration.get("client_id") not in (None, client_id):
+            raise AuthError("client_id_mismatch")
+        if registration.get("subject") not in (None, record["subject"]):
+            raise AuthError("account_mismatch")
         registrations.save_registration(
             app_state.settings.state_dir, {**registration, **record}
         )

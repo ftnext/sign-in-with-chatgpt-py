@@ -149,7 +149,8 @@ order preserved):
   characters including `instructions` (422). These are transport limits, not
   a model context guarantee; nothing is truncated automatically.
 - `model` must appear in the upstream model list, which is fetched on demand
-  and cached in memory per connection.
+  and cached in memory per connection for up to 10 minutes. A model missing
+  from the cache triggers one refetch before `unknown_model` is returned.
 
 ### SSE responses
 
@@ -298,7 +299,8 @@ Path=/; `Secure` stays off on loopback HTTP). It rotates at sign-in
 completion and expires 24 hours after the last authenticated access.
 
 Access tokens refresh automatically before model/responses calls; concurrent
-refreshes are serialized, the rotated refresh token is applied immediately,
+refreshes are serialized, a rotated refresh token is applied immediately (the
+current one is kept when the server does not rotate it),
 and a refresh racing a logout or re-login cannot revive a stale connection.
 If refresh fails the session becomes `reauthorization_required` — sign in
 again. There is no API-key fallback and no automatic request retry.

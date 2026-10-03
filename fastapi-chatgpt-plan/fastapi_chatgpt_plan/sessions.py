@@ -69,6 +69,17 @@ class MemoryState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    def _purge_expired(self) -> None:
+        now = time.time()
+        self.sessions = {
+            key: value for key, value in self.sessions.items() if value.expires_at > now
+        }
+        self.transactions = {
+            key: value
+            for key, value in self.transactions.items()
+            if value.expires_at > now
+        }
+
     def _new_session_id(self) -> str:
         while True:
             session_id = secrets.token_urlsafe(32)
@@ -77,6 +88,7 @@ class MemoryState:
 
     async def create_session(self, *, authenticated=False) -> Session:
         async with self.lock:
+            self._purge_expired()
             session = Session(
                 id=self._new_session_id(),
                 csrf=secrets.token_urlsafe(32),
@@ -142,12 +154,7 @@ class MemoryState:
             public_identity=public_identity,
         )
         async with self.lock:
-            now = time.time()
-            self.transactions = {
-                key: old
-                for key, old in self.transactions.items()
-                if old.expires_at > now
-            }
+            self._purge_expired()
             self.transactions[tx.state] = tx
         return tx
 

@@ -57,7 +57,10 @@ async def fetch_models(http: httpx.AsyncClient, token: str) -> list:
         raise ApiError(
             "Could not fetch models: " + describe_status_error(exc, secret=token)
         ) from exc
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ApiError("Unexpected model list response from the API") from exc
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, list):
         raise ApiError("Unexpected model list response from the API")

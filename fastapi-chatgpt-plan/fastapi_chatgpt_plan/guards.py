@@ -11,6 +11,8 @@ from .errors import AuthError, PublicError
 from .oauth import PLAN_SCOPE, REFRESH_MARGIN_SECONDS
 from .sessions import CSRF_HEADER, SESSION_COOKIE, Connection
 
+MODELS_CACHE_TTL_SECONDS = 600
+
 
 def get_state(request: Request):
     return request.app.state.chatgpt_state
@@ -149,6 +151,8 @@ async def ensure_access_token(request: Request) -> Connection:
 def check_model_cache(state, connection) -> list | None:
     cached = state.models_cache
     if not cached:
+        return None
+    if time.time() - cached.get("fetched_at", 0) > MODELS_CACHE_TTL_SECONDS:
         return None
     if cached.get("client_id") != connection.client_id:
         return None

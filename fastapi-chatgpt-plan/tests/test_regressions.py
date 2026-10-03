@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import time
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -425,3 +426,145 @@ async def test_logout_rejects_upstream_results_opened_for_old_generation(
         finally:
             release.set()
             await pending
+
+
+def _signed_in_client(servers, state_dir):
+    client = TestClient(build_app(servers, state_dir))
+    sign_in(client, servers)
+    return client
+
+
+def _session_cookie_headers(response):
+    return [
+        header
+        for header in response.headers.get_list("set-cookie")
+        if header.startswith(SESSION_COOKIE + "=")
+    ]
+
+
+def test_expired_abandoned_sessions_and_transactions_are_purged(app):
+    abandoned = TestClient(app)
+    begin_login(abandoned)
+    state = app.state.chatgpt_state
+    for item in (*state.sessions.values(), *state.transactions.values()):
+        item.expires_at = time.time() - 1
+    bootstrap(TestClient(app))
+    assert len(state.sessions) == 1
+    assert not state.transactions
+
+
+def test_authenticated_requests_renew_session_cookie(servers, state_dir):
+    client = _signed_in_client(servers, state_dir)
+    session = client.app.state.chatgpt_state.sessions[client.cookies[SESSION_COOKIE]]
+    session.expires_at = time.time() + 60
+    response = client.get("/api/models")
+    assert response.status_code == 200
+    (cookie,) = _session_cookie_headers(response)
+    assert "Max-Age=86400" in cookie or "Max-Age=86399" in cookie
+    logout = post_csrf(client, "/auth/logout")
+    assert logout.status_code == 200
+    (deleted,) = _session_cookie_headers(logout)
+    assert "Max-Age=0" in deleted
+
+
+def test_anonymous_requests_do_not_renew_session_cookie(app):
+    client = TestClient(app)
+    bootstrap(client)
+    assert not _session_cookie_headers(client.get("/api/session"))
+
+
+def test_discovery_failure_returns_upstream_error(app, servers):
+    servers.discovery_status = 503
+    response = post_csrf(TestClient(app), "/auth/login", follow_redirects=False)
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_error"
+
+
+def test_jwks_failure_during_callback_returns_upstream_error(client, servers):
+    servers.jwks_status = 503
+    response = finish_login(client, begin_login(client), servers.nonce_holder)
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_error"
+    assert client.app.state.chatgpt_state.connection is None
+
+
+def test_refresh_without_rotation_keeps_refresh_token(servers, state_dir):
+    client = _signed_in_client(servers, state_dir)
+    connection = client.app.state.chatgpt_state.connection
+    original = connection.refresh_token
+    servers.next_refresh_token = None
+    connection.expires_at = time.time() - 1
+    assert client.get("/api/models").status_code == 200
+    assert connection.refresh_token == original
+    assert connection.access_token != "access-token-1"
+
+
+def test_malformed_model_list_returns_upstream_error(servers, state_dir):
+    client = _signed_in_client(servers, state_dir)
+    servers.models_raw = b"not json"
+    response = client.get("/api/models")
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_error"
+
+
+def _respond(client, model):
+    return post_csrf(
+        client,
+        "/api/responses",
+        json={"model": model, "input": [{"role": "user", "content": "hi"}]},
+    )
+
+
+def test_unknown_cached_model_refreshes_model_list(servers, state_dir):
+    client = _signed_in_client(servers, state_dir)
+    servers.response_events = [delta_event("hi"), completed_event()]
+    state = client.app.state.chatgpt_state
+    state.models_cache = {
+        "client_id": ISSUED_CLIENT_ID,
+        "subject": state.connection.subject,
+        "fetched_at": time.time(),
+        "models": [{"slug": "gpt-5-mini"}],
+    }
+    response = _respond(client, "gpt-6.1-sol")
+    assert response.status_code == 200
+    assert len(servers.models_requests) == 1
+    assert "gpt-6.1-sol" in {m["slug"] for m in state.models_cache["models"]}
+    assert _respond(client, "missing-model").status_code == 422
+
+
+def test_stale_model_cache_is_refetched(servers, state_dir):
+    client = _signed_in_client(servers, state_dir)
+    servers.response_events = [delta_event("hi"), completed_event()]
+    state = client.app.state.chatgpt_state
+    assert client.get("/api/models").status_code == 200
+    assert _respond(client, "gpt-5-mini").status_code == 200
+    assert len(servers.models_requests) == 1
+    state.models_cache["fetched_at"] = time.time() - 3600
+    assert _respond(client, "gpt-5-mini").status_code == 200
+    assert len(servers.models_requests) == 2
+
+
+def test_overlapping_first_sign_ins_keep_first_registration(app, servers):
+    first, second = TestClient(app), TestClient(app)
+    first_url, second_url = begin_login(first), begin_login(second)
+    holder = servers.nonce_holder
+    assert (
+        finish_login(first, first_url, holder, client_id="client-a").status_code == 303
+    )
+    response = finish_login(second, second_url, holder, client_id="client-b")
+    assert response.status_code == 400
+    assert app.state.registration["client_id"] == "client-a"
+    assert app.state.chatgpt_state.connection.client_id == "client-a"
+
+
+def test_sign_in_cannot_replace_registration_committed_meanwhile(
+    app, servers, state_dir
+):
+    client = TestClient(app)
+    url = begin_login(client)
+    app.state.registration["client_id"] = "client-a"
+    response = finish_login(client, url, servers.nonce_holder, client_id="client-b")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "client_id_mismatch"
+    assert app.state.chatgpt_state.connection is None
+    assert registrations.load_registration(state_dir).get("client_id") is None

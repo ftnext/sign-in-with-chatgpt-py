@@ -39,17 +39,37 @@ class OAuth:
         self.keys = None
         self.keys_at = 0
 
+    async def _get_json(self, url, description):
+        try:
+            response = await self.http.get(url)
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Could not reach the auth server: {exc}") from exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ApiError(
+                f"Could not fetch {description}: " + describe_status_error(exc)
+            ) from exc
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ApiError(f"Unexpected {description} from the auth server") from exc
+        if not isinstance(data, dict):
+            raise ApiError(f"Unexpected {description} from the auth server")
+        return data
+
     async def metadata(self):
         if self.discovery is None:
-            response = await self.http.get(ISSUER + "/.well-known/openid-configuration")
-            response.raise_for_status()
-            metadata = response.json()
+            metadata = await self._get_json(
+                ISSUER + "/.well-known/openid-configuration", "OpenID configuration"
+            )
             if metadata.get("issuer") != ISSUER:
-                raise AuthError("invalid_issuer")
+                raise ApiError("Unexpected issuer in the OpenID configuration")
             for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
-                parsed = urlsplit(metadata[key])
+                endpoint = metadata.get(key)
+                parsed = urlsplit(endpoint if isinstance(endpoint, str) else "")
                 if parsed.scheme != "https" or parsed.netloc != "auth.openai.com":
-                    raise AuthError("invalid_discovery")
+                    raise ApiError(f"Unexpected {key} in the OpenID configuration")
             self.discovery = metadata
         return self.discovery
 
@@ -92,9 +112,8 @@ class OAuth:
             key = None
             for attempt in range(2):
                 if self.keys is None or time.time() - self.keys_at > 3600 or attempt:
-                    response = await self.http.get(metadata["jwks_uri"])
-                    response.raise_for_status()
-                    self.keys = jwt.PyJWKSet.from_dict(response.json())
+                    jwks = await self._get_json(metadata["jwks_uri"], "signing keys")
+                    self.keys = jwt.PyJWKSet.from_dict(jwks)
                     self.keys_at = time.time()
                 key = next(
                     (k for k in self.keys.keys if k.key_id == header.get("kid")),
@@ -238,6 +257,8 @@ class OAuth:
             if identity["sub"] != connection.subject:
                 raise AuthError("account_mismatch")
         fields = self.credentials(tokens, connection.scopes)
+        if fields["refresh_token"] is None:
+            fields["refresh_token"] = connection.refresh_token
         fields["id_token"] = id_token or connection.id_token
         return fields
 

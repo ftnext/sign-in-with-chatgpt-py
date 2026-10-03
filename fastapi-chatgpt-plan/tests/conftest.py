@@ -96,6 +96,8 @@ class FakeServers:
         self.rsa_key = rsa_key
         self.jwks = jwks
         self.nonce_holder = nonce_holder if nonce_holder is not None else {}
+        self.discovery_status = 200
+        self.jwks_status = 200
         self.token_requests = []
         self.token_status = 200
         self.token_error = {"error": "invalid_grant"}
@@ -116,6 +118,7 @@ class FakeServers:
         ]
         self.models_status = 200
         self.models_error = {"error": {"code": "bad", "message": "nope"}}
+        self.models_raw = None
         self.models_requests = []
         self.responses_payloads = []
         self.response_events = None
@@ -139,7 +142,7 @@ class FakeServers:
         if self.id_token_override is not None:
             payload["id_token"] = self.id_token_override
         self.next_access_token = access + "-next"
-        self.next_refresh_token = refresh + "-next"
+        self.next_refresh_token = refresh and refresh + "-next"
         return httpx.Response(200, json=payload)
 
     def sse_body(self):
@@ -149,9 +152,9 @@ class FakeServers:
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if url == ISSUER + "/.well-known/openid-configuration":
-            return httpx.Response(200, json=DISCOVERY)
+            return httpx.Response(self.discovery_status, json=DISCOVERY)
         if url == DISCOVERY["jwks_uri"]:
-            return httpx.Response(200, json=self.jwks)
+            return httpx.Response(self.jwks_status, json=self.jwks)
         if url == DISCOVERY["token_endpoint"]:
             form = dict(parse_qsl(request.content.decode()))
             self.token_requests.append(form)
@@ -164,6 +167,8 @@ class FakeServers:
             self.models_requests.append(request)
             if self.models_status != 200:
                 return httpx.Response(self.models_status, json=self.models_error)
+            if self.models_raw is not None:
+                return httpx.Response(200, content=self.models_raw)
             return httpx.Response(200, json={"models": self.models})
         if url == RESOURCE + "/responses":
             self.responses_payloads.append(json.loads(request.content))

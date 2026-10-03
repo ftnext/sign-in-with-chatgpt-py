@@ -1,6 +1,7 @@
 """Application factory: settings, lifespan, state, and route assembly."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -12,7 +13,7 @@ from .config import Settings
 from .errors import ApiError, PublicError, UsageLimitError
 from .oauth import OAuth
 from .registrations import StorageError
-from .sessions import MemoryState
+from .sessions import SESSION_COOKIE, MemoryState
 
 logger = logging.getLogger("fastapi_chatgpt_plan")
 
@@ -74,6 +75,26 @@ def create_app(
         if expected and request.headers.get("host") != expected:
             return _error("invalid_host", "Unexpected Host header.", 403)
         return await call_next(request)
+
+    @app.middleware("http")
+    async def renew_session_cookie(request: Request, call_next):
+        response = await call_next(request)
+        session_id = request.cookies.get(SESSION_COOKIE)
+        session = app.state.chatgpt_state.sessions.get(session_id)
+        if (
+            session is None
+            or not session.authenticated
+            or session.expires_at <= time.time()
+        ):
+            return response
+        cookie_prefix = SESSION_COOKIE + "="
+        if any(
+            header.startswith(cookie_prefix)
+            for header in response.headers.getlist("set-cookie")
+        ):
+            return response
+        routes_auth.set_session_cookie(response, session)
+        return response
 
     @app.exception_handler(PublicError)
     async def public_error_handler(request: Request, exc: PublicError):
