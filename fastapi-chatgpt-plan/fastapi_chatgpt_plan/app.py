@@ -80,11 +80,15 @@ def create_app(
     async def renew_session_cookie(request: Request, call_next):
         response = await call_next(request)
         session_id = request.cookies.get(SESSION_COOKIE)
-        session = app.state.chatgpt_state.sessions.get(session_id)
+        state = app.state.chatgpt_state
+        session = state.sessions.get(session_id)
         if (
             session is None
             or not session.authenticated
             or session.expires_at <= time.time()
+            or state.connection is None
+            or session.generation != state.connection.generation
+            or request.headers.get("host") != app.state.expected_host
         ):
             return response
         cookie_prefix = SESSION_COOKIE + "="

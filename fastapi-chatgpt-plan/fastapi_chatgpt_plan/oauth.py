@@ -171,7 +171,13 @@ class OAuth:
                 "Token request failed: "
                 + describe_status_error(exc, secrets=secrets_to_hide)
             ) from exc
-        return response.json()
+        try:
+            tokens = response.json()
+        except ValueError as exc:
+            raise ApiError("Unexpected token response from the auth server") from exc
+        if not isinstance(tokens, dict):
+            raise ApiError("Unexpected token response from the auth server")
+        return tokens
 
     @staticmethod
     def credentials(tokens, old_scopes=None):
