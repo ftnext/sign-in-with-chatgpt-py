@@ -1,0 +1,51 @@
+[project]
+name = "fastapi-chatgpt-plan"
+version = "0.1.0"
+description = "Local FastAPI backend using Sign in with ChatGPT OAuth and your ChatGPT plan"
+readme = "README.md"
+authors = [{name = "ftnext"}]
+license = "Apache-2.0"
+classifiers = []
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "httpx>=0.28,<1",
+    "openai>=3,<4",
+    "PyJWT[crypto]>=2.10,<3",
+    "pydantic>=2,<3",
+    "pydantic-settings>=2,<3",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["fastapi_chatgpt_plan*"]
+
+[tool.setuptools.package-data]
+fastapi_chatgpt_plan = ["templates/*"]
+
+[tool.uv]
+package = true
+
+[project.urls]
+Homepage = "https://github.com/ftnext/sign-in-with-chatgpt-py/tree/main/fastapi-chatgpt-plan"
+Changelog = "https://github.com/ftnext/sign-in-with-chatgpt-py/releases"
+Issues = "https://github.com/ftnext/sign-in-with-chatgpt-py/issues"
+CI = "https://github.com/ftnext/sign-in-with-chatgpt-py/actions"
+
+[project.scripts]
+fastapi-chatgpt-plan = "fastapi_chatgpt_plan.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "cryptography",
+]

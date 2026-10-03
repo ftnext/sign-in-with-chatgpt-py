@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fastapi-chatgpt-plan</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+    button { font: inherit; padding: 0.4rem 1rem; cursor: pointer; }
+    #status { padding: 0.6rem 0; }
+    .dim { color: #666; }
+    ul { padding-left: 1.2rem; }
+  </style>
+</head>
+<body>
+  <h1>fastapi-chatgpt-plan</h1>
+  <div id="status">Loading…</div>
+  <div id="actions"></div>
+  <div id="models"></div>
+  <script>
+    async function refresh() {
+      const res = await fetch("/api/session");
+      const info = await res.json();
+      const status = document.getElementById("status");
+      const actions = document.getElementById("actions");
+      const models = document.getElementById("models");
+      actions.textContent = "";
+      models.textContent = "";
+      if (info.status === "authenticated" || info.status === "reauthorization_required") {
+        const who = (info.user && (info.user.name || info.user.email)) || "ChatGPT account";
+        status.textContent = info.status === "authenticated"
+          ? `Signed in as ${who}.`
+          : `Signed in as ${who}, but sign-in again is required.`;
+        const plan = document.createElement("div");
+        plan.className = "dim";
+        plan.textContent = info.plan.enabled
+          ? (info.plan.permitted ? "ChatGPT plan inference: permitted." : "ChatGPT plan inference: not granted.")
+          : "ChatGPT plan inference: disabled (CHATGPT_PLAN_ENABLED=false).";
+        status.appendChild(plan);
+        if (info.plan.enabled && info.plan.permitted) {
+          const list = document.createElement("ul");
+          const res2 = await fetch("/api/models");
+          if (res2.ok) {
+            const data = await res2.json();
+            for (const model of data.models) {
+              const li = document.createElement("li");
+              li.textContent = `${model.display_name} (${model.slug})`;
+              list.appendChild(li);
+            }
+            models.appendChild(list);
+          }
+        }
+        const logout = document.createElement("button");
+        logout.textContent = "Sign out";
+        logout.onclick = async () => {
+          await fetch("/auth/logout", {method: "POST", headers: {"x-csrf-token": info.csrf}});
+          refresh();
+        };
+        actions.appendChild(logout);
+      } else {
+        status.textContent = "Not signed in.";
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = "/auth/login";
+        const csrf = document.createElement("input");
+        csrf.type = "hidden";
+        csrf.name = "csrf_token";
+        csrf.value = info.csrf;
+        const button = document.createElement("button");
+        button.type = "submit";
+        button.textContent = "Continue with ChatGPT";
+        form.appendChild(csrf);
+        form.appendChild(button);
+        actions.appendChild(form);
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>
