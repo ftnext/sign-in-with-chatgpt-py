@@ -2,13 +2,18 @@ name: Publish Python Package
 
 on:
   release:
-    types: [created]
+    types: [published]
+
+defaults:
+  run:
+    working-directory: llm-chatgpt-plan
 
 permissions:
   contents: read
 
 jobs:
   test:
+    if: startsWith(github.event.release.tag_name, 'llm-chatgpt-plan-')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -20,7 +25,22 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
         cache: pip
-        cache-dependency-path: pyproject.toml
+        cache-dependency-path: llm-chatgpt-plan/pyproject.toml
+    - name: Verify release tag matches package version
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+      run: |
+        python - <<'PY'
+        import os
+        import sys
+        import tomllib
+        from pathlib import Path
+
+        version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+        expected = f"llm-chatgpt-plan-{version}"
+        if os.environ["RELEASE_TAG"] != expected:
+            sys.exit(f"Release tag must match package version: {expected}")
+        PY
     - name: Install dependencies
       run: |
         pip install -e . --group dev
@@ -40,7 +60,7 @@ jobs:
       with:
         python-version: "3.14"
         cache: pip
-        cache-dependency-path: pyproject.toml
+        cache-dependency-path: llm-chatgpt-plan/pyproject.toml
     - name: Install dependencies
       run: |
         pip install setuptools wheel build
@@ -49,3 +69,5 @@ jobs:
         python -m build
     - name: Publish
       uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      with:
+        packages-dir: llm-chatgpt-plan/dist/

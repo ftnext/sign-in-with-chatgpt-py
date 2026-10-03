@@ -1,6 +1,6 @@
 [project]
 name = "llm-chatgpt-plan"
-version = "0.1"
+version = "0.1.0"
 description = "Use your ChatGPT plan via Sign in with ChatGPT OAuth"
 readme = "README.md"
 authors = [{name = "ftnext"}]
@@ -27,7 +27,7 @@ include = ["llm_chatgpt_plan*"]
 package = true
 
 [project.urls]
-Homepage = "https://github.com/ftnext/sign-in-with-chatgpt-py"
+Homepage = "https://github.com/ftnext/sign-in-with-chatgpt-py/tree/main/llm-chatgpt-plan"
 Changelog = "https://github.com/ftnext/sign-in-with-chatgpt-py/releases"
 Issues = "https://github.com/ftnext/sign-in-with-chatgpt-py/issues"
 CI = "https://github.com/ftnext/sign-in-with-chatgpt-py/actions"

@@ -1,6 +1,20 @@
 name: Test
 
-on: [push, pull_request]
+on:
+  push:
+    paths:
+    - 'llm-chatgpt-plan/**'
+    - '.github/workflows/test.yml'
+    - '.github/workflows/publish.yml'
+  pull_request:
+    paths:
+    - 'llm-chatgpt-plan/**'
+    - '.github/workflows/test.yml'
+    - '.github/workflows/publish.yml'
+
+defaults:
+  run:
+    working-directory: llm-chatgpt-plan
 
 permissions:
   contents: read
@@ -18,11 +32,10 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
         cache: pip
-        cache-dependency-path: pyproject.toml
+        cache-dependency-path: llm-chatgpt-plan/pyproject.toml
     - name: Install dependencies
       run: |
         pip install -e . --group dev
     - name: Run tests
       run: |
         python -m pytest
-
