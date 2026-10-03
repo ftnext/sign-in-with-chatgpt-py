@@ -1,0 +1,39 @@
+[project]
+name = "llm-chatgpt-plan"
+version = "0.1"
+description = "Use your ChatGPT plan via Sign in with ChatGPT OAuth"
+readme = "README.md"
+authors = [{name = "ftnext"}]
+license = "Apache-2.0"
+classifiers = []
+requires-python = ">=3.11"
+dependencies = [
+    "llm>=0.34",
+    "httpx>=0.28,<1",
+    "openai>=3,<4",
+    "PyJWT[crypto]>=2.10,<3",
+    "click",
+    "pydantic",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["llm_chatgpt_plan*"]
+
+[tool.uv]
+package = true
+
+[project.urls]
+Homepage = "https://github.com/ftnext/sign-in-with-chatgpt-py"
+Changelog = "https://github.com/ftnext/sign-in-with-chatgpt-py/releases"
+Issues = "https://github.com/ftnext/sign-in-with-chatgpt-py/issues"
+CI = "https://github.com/ftnext/sign-in-with-chatgpt-py/actions"
+
+[project.entry-points.llm]
+chatgpt_plan = "llm_chatgpt_plan"
+
+[dependency-groups]
+dev = ["pytest", "ruff", "cryptography"]

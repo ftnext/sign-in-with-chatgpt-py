@@ -219,3 +219,5 @@ __marimo__/
 
 # Sign in with ChatGPT
 .chatgpt-script/
+.DS_Store
+uv.lock
