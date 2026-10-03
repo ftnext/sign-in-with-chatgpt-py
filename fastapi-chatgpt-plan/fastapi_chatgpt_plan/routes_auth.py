@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import registrations
-from .errors import ApiError, AuthError
+from .errors import ApiError, AuthError, PublicError
 from .guards import (
     get_session_id,
     get_state,
@@ -28,11 +28,46 @@ CALLBACK_MESSAGES = {
     "expired_sign_in": "The sign-in attempt expired. Start again.",
     "invalid_state": "The sign-in response could not be verified.",
     "sign_in_declined": "Sign-in was declined in the browser.",
-    "account_mismatch": (
-        "The signed-in account does not match this registration."
-    ),
+    "account_mismatch": ("The signed-in account does not match this registration."),
     "plan_permission_required": "The account did not grant any access.",
 }
+
+
+def login_configuration(app_state):
+    settings = app_state.settings
+    registration = app_state.registration
+    client_id = registration.get("client_id")
+    public_identity = registration.get("client_kind") == "identity"
+    if settings.chatgpt_plan_enabled:
+        if public_identity:
+            raise PublicError(
+                "plan_registration_required",
+                "This state directory holds an identity-only client. Choose a "
+                "separate CHATGPT_STATE_DIR for ChatGPT plan registration.",
+                409,
+            )
+    else:
+        configured = settings.chatgpt_identity_client_id
+        if configured and client_id and configured != client_id:
+            raise PublicError(
+                "registration_mismatch",
+                "The configured identity client differs from this registration. "
+                "Choose a separate CHATGPT_STATE_DIR.",
+                409,
+            )
+        if not client_id:
+            client_id = configured
+            public_identity = bool(configured)
+        if not client_id:
+            raise PublicError(
+                "identity_registration_required",
+                "Identity-only sign-in needs an issued public client ID. Set "
+                "CHATGPT_IDENTITY_CLIENT_ID with its registered loopback callback. "
+                "To register an OSS client with plan permissions instead, explicitly "
+                "restart with CHATGPT_PLAN_ENABLED=true.",
+                409,
+            )
+    return client_id, public_identity
 
 
 def error_body(code: str, message: str) -> dict:
@@ -74,24 +109,33 @@ async def session_info(request: Request):
     connection = state.connection
     status = "anonymous"
     user = None
-    if session.authenticated and connection is not None:
+    authenticated = bool(
+        session.authenticated
+        and connection is not None
+        and session.generation == connection.generation
+    )
+    if authenticated:
         status = (
-            "reauthorization_required"
-            if connection.needs_reauth
-            else "authenticated"
+            "reauthorization_required" if connection.needs_reauth else "authenticated"
         )
         user = {"email": connection.email, "name": connection.name}
     settings = request.app.state.settings
+    try:
+        login_configuration(request.app.state)
+        login_error = None
+    except PublicError as exc:
+        login_error = error_body(exc.code, exc.message)["error"]
     payload = {
         "status": status,
         "user": user,
         "plan": {
             "enabled": settings.chatgpt_plan_enabled,
             "permitted": bool(
-                connection and connection.plan_permitted and session.authenticated
+                connection and connection.plan_permitted and authenticated
             ),
         },
         "csrf": session.csrf,
+        "login": {"available": login_error is None, "error": login_error},
     }
     response = JSONResponse(payload, headers={"Cache-Control": "no-store"})
     if created:
@@ -111,7 +155,7 @@ async def login(request: Request):
     registration = app_state.registration
     connection = state.connection
 
-    client_id = registration.get("client_id")
+    client_id, public_identity = login_configuration(app_state)
     prior = None
     if client_id:
         prior = {
@@ -124,6 +168,7 @@ async def login(request: Request):
         verifier=secrets.token_urlsafe(64),
         redirect_uri=settings.redirect_uri,
         client_id=client_id,
+        public_identity=public_identity,
     )
     scope = PLAN_SCOPES if settings.chatgpt_plan_enabled else IDENTITY_SCOPES
     url = await app_state.oauth.begin(
@@ -144,9 +189,7 @@ def _callback_error(exc: AuthError) -> JSONResponse:
 
 @router.get("/auth/callback")
 async def callback(request: Request):
-    pairs = parse_qsl(
-        request.scope["query_string"].decode(), keep_blank_values=True
-    )
+    pairs = parse_qsl(request.scope["query_string"].decode(), keep_blank_values=True)
     if len(pairs) != len({key for key, _ in pairs}):
         return JSONResponse(
             error_body("invalid_callback", "Duplicated callback parameters."),
@@ -161,39 +204,25 @@ async def callback(request: Request):
     registration = app_state.registration
     try:
         if query.get("error"):
-            raise AuthError(
-                "sign_in_declined" if tx is not None else "invalid_state"
-            )
+            raise AuthError("sign_in_declined" if tx is not None else "invalid_state")
         if tx is None:
             raise AuthError("invalid_state")
-        client_id_hint = query.get("client_id")
-        if tx.client_id is None and client_id_hint:
-            registrations.save_registration(
-                app_state.settings.state_dir,
-                {**registration, "client_id": client_id_hint},
-            )
-            registration["client_id"] = client_id_hint
         client_id, identity, credentials, id_token = await app_state.oauth.complete(
             tx, query, prior_subject=registration.get("subject")
         )
     except AuthError as exc:
         return _callback_error(exc)
     except ApiError as exc:
-        return JSONResponse(
-            error_body("upstream_error", str(exc)), status_code=502
-        )
+        return JSONResponse(error_body("upstream_error", str(exc)), status_code=502)
 
     record = {
         "client_id": client_id,
+        "client_kind": "identity" if tx.public_identity else "plan",
         "issuer": identity.get("iss"),
         "subject": identity["sub"],
         "email": identity.get("email"),
         "name": identity.get("name"),
     }
-    registrations.save_registration(
-        app_state.settings.state_dir, {**registration, **record}
-    )
-    registration.update(record)
 
     connection = Connection(
         client_id=client_id,
@@ -209,10 +238,17 @@ async def callback(request: Request):
         generation=0,
         plan_permitted=PLAN_SCOPE in credentials["scopes"],
     )
-    await state.set_connection(connection)
 
-    session = await state.get_session(session_id)
-    rotated = await state.rotate_session(session)
+    def commit():
+        registrations.save_registration(
+            app_state.settings.state_dir, {**registration, **record}
+        )
+        registration.update(record)
+
+    try:
+        rotated = await state.finish_sign_in(connection, tx, commit)
+    except AuthError as exc:
+        return _callback_error(exc)
     response = RedirectResponse("/", status_code=303)
     set_session_cookie(response, rotated)
     return response
@@ -225,7 +261,7 @@ async def logout(request: Request):
     await verify_csrf(request, session)
 
     state = get_state(request)
-    connection = state.connection
+    connection = await state.logout(session)
     remote_revocation = "not_attempted"
     if connection and connection.refresh_token:
         confirmed = False
@@ -234,11 +270,9 @@ async def logout(request: Request):
                 connection.client_id, connection.refresh_token
             )
         remote_revocation = "confirmed" if confirmed else "not_confirmed"
-    await state.clear_connection()
-    await state.destroy_session(session.id)
-    await state.close_streams()
     response = JSONResponse(
         {"status": "signed_out", "remote_revocation": remote_revocation}
     )
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    if state.generation == connection.generation + 1:
+        response.delete_cookie(SESSION_COOKIE, path="/")
     return response

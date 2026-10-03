@@ -48,6 +48,11 @@ def test_models_filters_visibility_and_preserves_order(servers, state_dir):
 
 
 def test_models_disabled_returns_403(servers, state_dir):
+    from conftest import ISSUED_CLIENT_ID
+
+    from fastapi_chatgpt_plan import registrations
+
+    registrations.save_registration(state_dir, {"client_id": ISSUED_CLIENT_ID})
     servers.scope = "openid profile email"
     client = TestClient(build_app(servers, state_dir, plan_enabled=False))
     sign_in(client, servers)
@@ -212,7 +217,7 @@ def test_responses_requires_csrf(servers, state_dir):
     assert response.status_code == 403
 
 
-def test_responses_failed_stream_reports_error_event(servers, state_dir):
+def test_responses_failed_stream_preserves_upstream_event(servers, state_dir):
     client = _signed_in_client(servers, state_dir)
     servers.response_events = [delta_event("partial", 1), failed_event()]
     response = post_csrf(
@@ -222,8 +227,23 @@ def test_responses_failed_stream_reports_error_event(servers, state_dir):
     )
     assert response.status_code == 200
     events = _sse_parse(response.text)
-    assert events[-1][0] == "error"
-    assert events[-1][1]["code"] == "upstream_failed"
+    assert events[-1][0] == "response.failed"
+    assert events[-1][1]["type"] == "response.failed"
+    assert events[-1][1]["sequence_number"] == 2
+    expected = failed_event()["response"]
+    actual = events[-1][1]["response"]
+
+    def contains(actual, expected):
+        if isinstance(expected, dict):
+            return all(
+                key in actual and contains(actual[key], value)
+                for key, value in expected.items()
+            )
+        return actual == expected
+
+    assert contains(actual, expected)
+    assert actual["error"]["code"] == "server_error"
+    assert actual["error"]["message"] == "upstream failed"
 
 
 def test_responses_usage_limit_mid_stream(servers, state_dir):
@@ -238,8 +258,10 @@ def test_responses_usage_limit_mid_stream(servers, state_dir):
         json={"model": "gpt-6.1-sol", "input": [{"role": "user", "content": "hi"}]},
     )
     events = _sse_parse(response.text)
-    assert events[-1][0] == "error"
-    assert events[-1][1]["code"] == "usage_limit"
+    assert events[-1][0] == "response.failed"
+    assert events[-1][1]["response"]["error"]["code"] == (
+        "subscription_sharing_usage_limit_exceeded"
+    )
 
 
 def test_responses_stream_without_terminal_event(servers, state_dir):

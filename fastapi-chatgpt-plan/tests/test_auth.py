@@ -151,6 +151,7 @@ def test_bad_id_token_signature_rejected(client, servers):
 
 
 def test_identity_only_mode_requests_identity_scope(servers, state_dir):
+    registrations.save_registration(state_dir, {"client_id": ISSUED_CLIENT_ID})
     app = build_app(servers, state_dir, plan_enabled=False)
     client = TestClient(app)
     servers.scope = IDENTITY_SCOPES

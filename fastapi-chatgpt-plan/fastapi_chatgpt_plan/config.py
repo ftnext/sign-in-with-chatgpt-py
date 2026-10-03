@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     chatgpt_plan_enabled: bool = False
     chatgpt_app_port: int = 8000
     chatgpt_state_dir: str = DEFAULT_STATE_DIR
+    chatgpt_identity_client_id: str | None = None
+
+    @field_validator("chatgpt_identity_client_id")
+    @classmethod
+    def _identity_client(cls, value):
+        if value is not None:
+            value = value.strip()
+            if not value or value == "dynamic_agent_client":
+                raise ValueError("Use an issued public identity client ID")
+        return value
 
     @field_validator("chatgpt_app_port")
     @classmethod

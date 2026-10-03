@@ -1,5 +1,7 @@
 """Async HTTP client pieces: model listing and streaming Responses calls."""
 
+import asyncio
+import contextlib
 import json
 
 import httpx
@@ -24,7 +26,6 @@ LIMIT_CODES = frozenset(
 TERMINAL_EVENTS = frozenset(
     {"response.completed", "response.failed", "response.incomplete", "error"}
 )
-FAILURE_EVENTS = frozenset({"response.failed", "response.incomplete", "error"})
 
 
 def usage_limit_error() -> UsageLimitError:
@@ -90,21 +91,12 @@ async def create_response_stream(http, token, payload):
         if exc.status_code == 401:
             raise AuthError("reauthorization_required") from exc
         raise ApiError(
-            "The API rejected the request: "
-            + describe_status_error(exc, secret=token)
+            "The API rejected the request: " + describe_status_error(exc, secret=token)
         ) from exc
     except APIConnectionError as exc:
         raise ApiError(redact(f"Could not reach the API: {exc}", (token,))) from exc
     except OpenAIError as exc:
         raise ApiError(redact(f"API request failed: {exc}", (token,))) from exc
-
-
-def _event_error(event):
-    response = getattr(event, "response", None)
-    error = getattr(response, "error", None) if response is not None else None
-    code = getattr(error, "code", None) or getattr(event, "code", None)
-    message = getattr(error, "message", None) or getattr(event, "message", None)
-    return code, message
 
 
 def _sse(event_name: str, data: dict) -> str:
@@ -115,11 +107,64 @@ def sse_error_event(code: str, message: str) -> str:
     return _sse("error", {"type": "error", "code": code, "message": message})
 
 
-async def sse_events(stream, token):
+class ManagedStream:
+    """Cancel an outstanding read before closing its async generator."""
+
+    def __init__(self, stream, token):
+        self.upstream = stream
+        self.events = sse_events(stream, token, close_upstream=False)
+        self.pending = None
+        self.closed = False
+        self.close_lock = asyncio.Lock()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.closed:
+            raise StopAsyncIteration
+        pending = asyncio.create_task(anext(self.events))
+        self.pending = pending
+        try:
+            result = await pending
+            if self.closed:
+                raise StopAsyncIteration
+            return result
+        except asyncio.CancelledError:
+            if self.closed:
+                raise StopAsyncIteration
+            raise
+        finally:
+            if self.pending is pending:
+                self.pending = None
+
+    async def aclose(self):
+        async with self.close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.pending is not None:
+                self.pending.cancel()
+                with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                    await self.pending
+            await self.events.aclose()
+            # Also covers a stream opened before the response iterator ever starts.
+            await self.upstream.close()
+
+
+def _safe_payload(value, token):
+    if isinstance(value, dict):
+        return {key: _safe_payload(item, token) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_payload(item, token) for item in value]
+    return redact(value, (token,)) if isinstance(value, str) else value
+
+
+async def sse_events(stream, token, *, close_upstream=True):
     """Serialize upstream stream events as SSE without buffering.
 
-    Terminal failures become an app ``error`` event; a stream that ends
-    without any terminal event is never reported as success.
+    Preserve upstream terminal events; only locally detected failures use
+    app ``error`` events. An EOF without a terminal event is not success.
     """
     from openai import OpenAIError
 
@@ -127,28 +172,8 @@ async def sse_events(stream, token):
     try:
         async for event in stream:
             event_type = event.type
-            if event_type in FAILURE_EVENTS:
-                terminal = True
-                code, message = _event_error(event)
-                if code in LIMIT_CODES:
-                    yield sse_error_event(
-                        "usage_limit",
-                        "ChatGPT plan usage is unavailable or exhausted. "
-                        f"Check your usage sharing settings: {USAGE_URL}",
-                    )
-                else:
-                    yield sse_error_event(
-                        "upstream_failed",
-                        redact(
-                            f"Response stream ended as {event_type}"
-                            + (f" ({code}: {message})" if code or message else ""),
-                            (token,),
-                        ),
-                    )
-                return
-            if event_type == "response.completed":
-                terminal = True
-            yield _sse(event_type, event.model_dump(mode="json"))
+            terminal = event_type in TERMINAL_EVENTS
+            yield _sse(event_type, _safe_payload(event.model_dump(mode="json"), token))
             if terminal:
                 return
         if not terminal:
@@ -162,4 +187,5 @@ async def sse_events(stream, token):
             redact(f"Response stream was interrupted: {exc}", (token,)),
         )
     finally:
-        await stream.close()
+        if close_upstream:
+            await stream.close()

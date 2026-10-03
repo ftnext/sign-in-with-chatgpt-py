@@ -41,9 +41,7 @@ class OAuth:
 
     async def metadata(self):
         if self.discovery is None:
-            response = await self.http.get(
-                ISSUER + "/.well-known/openid-configuration"
-            )
+            response = await self.http.get(ISSUER + "/.well-known/openid-configuration")
             response.raise_for_status()
             metadata = response.json()
             if metadata.get("issuer") != ISSUER:
@@ -55,9 +53,7 @@ class OAuth:
             self.discovery = metadata
         return self.discovery
 
-    async def begin(
-        self, tx, host_id, scope, client_id=None, prior=None
-    ):
+    async def begin(self, tx, host_id, scope, client_id=None, prior=None):
         """Build the authorization URL for a prepared transaction."""
         metadata = await self.metadata()
         challenge = base64.urlsafe_b64encode(
@@ -75,6 +71,9 @@ class OAuth:
             "code_challenge_method": "S256",
             "code_challenge": challenge.decode().rstrip("="),
         }
+        if tx.public_identity:
+            params.pop("resource")
+            params.pop("ext_agent_host_id")
         if not client_id:
             params["agent_name_hint"] = AGENT_NAME_HINT
         elif prior:
@@ -202,22 +201,26 @@ class OAuth:
             raise AuthError("client_id_mismatch")
         if not query.get("code"):
             raise AuthError("missing_code")
-        tokens = await self.token_request(
-            {
-                "grant_type": "authorization_code",
-                "client_id": client_id,
-                "code": query["code"],
-                "code_verifier": tx.verifier,
-                "redirect_uri": tx.redirect_uri,
-                "resource": RESOURCE,
-            }
-        )
-        identity = await self.verify(
-            tokens.get("id_token", ""), client_id, tx.nonce
-        )
+        form = {
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": query["code"],
+            "code_verifier": tx.verifier,
+            "redirect_uri": tx.redirect_uri,
+            "resource": RESOURCE,
+        }
+        if tx.public_identity:
+            form.pop("resource")
+        tokens = await self.token_request(form)
+        identity = await self.verify(tokens.get("id_token", ""), client_id, tx.nonce)
         if prior_subject and prior_subject != identity["sub"]:
             raise AuthError("account_mismatch")
-        return client_id, identity, self.credentials(tokens), tokens.get("id_token")
+        credentials = (
+            {"access_token": "", "refresh_token": None, "scopes": [], "expires_at": 0}
+            if tx.public_identity
+            else self.credentials(tokens)
+        )
+        return client_id, identity, credentials, tokens.get("id_token")
 
     async def refresh(self, connection):
         """Run one refresh_token grant; returns the replacement token fields."""

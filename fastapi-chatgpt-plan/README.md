@@ -20,10 +20,11 @@ uv sync
 
 ## Running
 
-Identity-only sign-in (no plan inference):
+Identity-only sign-in (no plan inference), using an issued **public identity
+client** with `http://127.0.0.1:8000/auth/callback` registered:
 
 ```bash
-uv run fastapi-chatgpt-plan
+CHATGPT_IDENTITY_CLIENT_ID=oaiapp_your_identity_client uv run fastapi-chatgpt-plan
 ```
 
 ChatGPT plan inference enabled:
@@ -31,6 +32,22 @@ ChatGPT plan inference enabled:
 ```bash
 CHATGPT_PLAN_ENABLED=true uv run fastapi-chatgpt-plan
 ```
+
+An unregistered installation in the default identity-only mode displays setup
+instructions and returns `409 identity_registration_required` from login,
+without redirecting to a dynamic registration that fails with `invalid_client`.
+It never silently requests plan scopes. The
+[identity public-client flow](https://developers.openai.com/siwc/website)
+requires a provisioned client; this package cannot issue one. It accepts an
+ID-token-only response and sends no API resource in that flow. Confidential
+identity clients are not supported.
+
+Alternatively, explicitly enable plan inference to register an OSS client and
+approve plan permissions. After that registration, restarting with the default
+`CHATGPT_PLAN_ENABLED=false` reuses the verified client for identity-only login,
+as confirmed with a real account. A provisioned identity client and an OSS plan
+client must use separate state directories; the app rejects attempts to switch
+client identities within one registration.
 
 The CLI binds `127.0.0.1` only and runs a single uvicorn worker. A second
 instance using the same state directory is refused via a process lock, so
@@ -50,6 +67,7 @@ with a clear error.
 | `CHATGPT_PLAN_ENABLED` | `false` | Enable inference and model listing; selects the OAuth scopes |
 | `CHATGPT_APP_PORT` | `8000` | Loopback port (`1024`–`65535`) |
 | `CHATGPT_STATE_DIR` | `~/.local/share/fastapi-chatgpt-plan` | Where registration data is stored (`~` expanded) |
+| `CHATGPT_IDENTITY_CLIENT_ID` | unset | Provisioned public identity client for a new identity-only installation |
 
 With `CHATGPT_PLAN_ENABLED=false` the server requests only
 `openid profile email` and never contacts the models/responses endpoints or
@@ -148,13 +166,18 @@ data: {"type":"response.completed", ...}
 ```
 
 Only `response.completed` counts as success. `response.failed`,
-`response.incomplete`, and upstream `error` events become an app-level
-`event: error` with a safe `code`/`message` (for example `usage_limit`,
-`upstream_failed`, `stream_incomplete`, `stream_interrupted`).
+`response.incomplete`, and upstream `error` retain their event names and JSON
+structure, with credential strings redacted. Locally detected EOF or transport
+failures use `event: error` with `stream_incomplete` or `stream_interrupted`.
+For an upstream failure, inspect `response.error` or `response.incomplete_details`;
+plan usage codes `subscription_sharing_usage_limit_exceeded` and
+`subscription_sharing_usage_unavailable` point to
+[ChatGPT usage settings](https://chatgpt.com/settings/usage).
 
 **Errors before the stream starts are normal HTTP errors** (see below);
-once streaming has begun, failures arrive as `event: error` inside the SSE
-stream even though the HTTP status is 200.
+once streaming has begun, failures arrive as SSE terminal events even though
+the HTTP status is 200. Logout or browser cancellation may end the connection
+without a terminal event; clients must not report such an EOF as success.
 
 ### JavaScript example
 
@@ -187,6 +210,8 @@ const reader = response.body
 
 let buffer = "";
 let answer = "";
+let completed = false;
+try {
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
@@ -205,13 +230,23 @@ while (true) {
       const { code, message } = JSON.parse(data);
       throw new Error(`${code}: ${message}`);
     }
+    if (event === "response.failed" || event === "response.incomplete") {
+      const payload = JSON.parse(data).response;
+      throw new Error(JSON.stringify(payload.error || payload.incomplete_details));
+    }
     if (event === "response.output_text.delta") {
       answer += JSON.parse(data).delta; // stream text incrementally
     }
     if (event === "response.completed") {
+      completed = true;
       // final usage/metadata in JSON.parse(data)
     }
   }
+}
+if (!completed) throw new Error("Stream ended before response.completed");
+} finally {
+  await reader.cancel(); // also cancels upstream if parsing/rendering fails
+  reader.releaseLock();
 }
 ```
 
@@ -228,6 +263,7 @@ Errors before SSE starts use a stable JSON shape:
 | No/expired session, not signed in, re-auth needed | 401 | `session_required`, `sign_in_required`, `reauthorization_required` |
 | Inference disabled or plan scope not granted | 403 | `inference_disabled`, `plan_permission_required` |
 | CSRF, Origin, or Host check failed | 403 | `invalid_csrf_token`, `invalid_origin`, `invalid_host` |
+| Identity registration missing or incompatible | 409 | `identity_registration_required`, `registration_mismatch`, `plan_registration_required` |
 | Unsupported input/parameters, unknown model | 422 | `invalid_request`, `invalid_json`, `unknown_model` |
 | Body over the size limit | 413 | `request_too_large` |
 | Plan usage unavailable/exhausted (pre-stream) | 429 | `usage_limit` |
@@ -235,8 +271,9 @@ Errors before SSE starts use a stable JSON shape:
 
 Usage-limit errors point to
 [ChatGPT usage settings](https://chatgpt.com/settings/usage). Mid-stream
-failures are reported as `event: error` inside SSE, never as HTTP errors and
-never as fabricated success events.
+failures are reported inside SSE, never as HTTP errors and never as fabricated
+success events. Upstream failure events keep their original names and payloads;
+locally detected failures use `event: error`.
 
 ## What is stored
 
@@ -248,7 +285,7 @@ Two separate places:
   server restart. Stopping the server discards the tokens; it does not
   revoke the registration with OpenAI.
 - **`CHATGPT_STATE_DIR`** — `registration.json` (schema version, persistent
-  host ID, issued client ID, verified issuer/subject/email/name) and
+  host ID, issued client ID, client kind, verified issuer/subject/email/name) and
   `runtime.lock` (the single-process lock). Directory mode `0700`, file mode
   `0600`, atomic writes, symlink-safe. No tokens, cookies, PKCE verifiers,
   codes, or conversation data are written anywhere.
@@ -270,6 +307,11 @@ again. There is no API-key fallback and no automatic request retry.
 session and tokens, and attempts remote refresh-token revocation
 (`remote_revocation` in the response is `confirmed`, `not_confirmed`, or
 `not_attempted`). The registration file is kept.
+Only a session authenticated for the current connection can log it out.
+Local disconnection precedes remote revocation; a later sign-in is protected
+from delayed logout/refresh results and cookie deletion. Pending callbacks from
+an older connection generation cannot restore it. Browser disconnection also
+cancels an outstanding upstream read and closes the stream.
 
 ## Development
 

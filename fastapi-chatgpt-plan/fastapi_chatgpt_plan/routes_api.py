@@ -23,6 +23,13 @@ from .schemas import MAX_BODY_BYTES, ResponseRequest
 router = APIRouter()
 
 
+def require_current(state, connection):
+    if not state.is_current(connection):
+        raise PublicError(
+            "sign_in_required", "The connection changed. Sign in again.", 401
+        )
+
+
 @router.get("/api/models")
 async def list_models(request: Request):
     connection = await ensure_access_token(request)
@@ -32,9 +39,8 @@ async def list_models(request: Request):
         models = await client.fetch_models(http, connection.access_token)
     except AuthError:
         connection.needs_reauth = True
-        raise PublicError(
-            "reauthorization_required", "Sign in again to continue.", 401
-        )
+        raise PublicError("reauthorization_required", "Sign in again to continue.", 401)
+    require_current(state, connection)
     state.models_cache = {
         "client_id": connection.client_id,
         "subject": connection.subject,
@@ -95,6 +101,7 @@ async def responses(request: Request):
             raise PublicError(
                 "reauthorization_required", "Sign in again to continue.", 401
             )
+        require_current(state, connection)
         state.models_cache = {
             "client_id": connection.client_id,
             "subject": connection.subject,
@@ -108,24 +115,26 @@ async def responses(request: Request):
             422,
         )
 
+    require_current(state, connection)
     try:
         stream = await client.create_response_stream(
             http, connection.access_token, payload.upstream_payload()
         )
     except AuthError:
         connection.needs_reauth = True
-        raise PublicError(
-            "reauthorization_required", "Sign in again to continue.", 401
-        )
+        raise PublicError("reauthorization_required", "Sign in again to continue.", 401)
 
-    events = client.sse_events(stream, connection.access_token)
-    state.register_stream(events)
+    events = client.ManagedStream(stream, connection.access_token)
+    if not state.register_stream(events, connection):
+        await events.aclose()
+        require_current(state, connection)
 
     async def body():
         try:
             async for chunk in events:
                 yield chunk
         finally:
+            await events.aclose()
             state.unregister_stream(events)
 
     return StreamingResponse(
@@ -133,4 +142,3 @@ async def responses(request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store"},
     )
-

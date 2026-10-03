@@ -59,6 +59,12 @@
         actions.appendChild(logout);
       } else {
         status.textContent = "Not signed in.";
+        if (!info.login.available) {
+          const notice = document.createElement("p");
+          notice.textContent = info.login.error.message;
+          status.appendChild(notice);
+          return;
+        }
         const form = document.createElement("form");
         form.method = "POST";
         form.action = "/auth/login";

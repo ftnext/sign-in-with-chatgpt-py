@@ -40,7 +40,7 @@ Run the FastAPI backend locally:
 ```bash
 cd fastapi-chatgpt-plan
 uv sync
-uv run fastapi-chatgpt-plan
+CHATGPT_IDENTITY_CLIENT_ID=oaiapp_your_identity_client uv run fastapi-chatgpt-plan
 # or, with ChatGPT plan inference enabled:
 CHATGPT_PLAN_ENABLED=true uv run fastapi-chatgpt-plan
 ```

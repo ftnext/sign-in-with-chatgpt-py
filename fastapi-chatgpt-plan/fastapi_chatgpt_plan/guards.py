@@ -37,12 +37,14 @@ async def require_authenticated(request: Request):
     """A session that completed sign-in, with a live connection, or 401."""
     session = await require_session(request)
     state = get_state(request)
-    if not session.authenticated or state.connection is None:
+    if (
+        not session.authenticated
+        or state.connection is None
+        or session.generation != state.connection.generation
+    ):
         raise PublicError("sign_in_required", "Not signed in.", 401)
     if state.connection.needs_reauth:
-        raise PublicError(
-            "reauthorization_required", "Sign in again to continue.", 401
-        )
+        raise PublicError("reauthorization_required", "Sign in again to continue.", 401)
     return session
 
 
@@ -106,8 +108,7 @@ async def ensure_access_token(request: Request) -> Connection:
     if connection.expires_at > time.time() + REFRESH_MARGIN_SECONDS:
         return connection
     async with state.refresh_lock:
-        connection = state.connection
-        if connection is None:
+        if not state.is_current(connection):
             raise PublicError("sign_in_required", "Not signed in.", 401)
         if connection.needs_reauth:
             raise PublicError(
@@ -136,7 +137,7 @@ async def ensure_access_token(request: Request) -> Connection:
             current.scopes = fields["scopes"]
             current.expires_at = fields["expires_at"]
             current.id_token = fields["id_token"]
-        elif current is None:
+        else:
             raise PublicError("sign_in_required", "Not signed in.", 401)
         if current.needs_reauth:
             raise PublicError(

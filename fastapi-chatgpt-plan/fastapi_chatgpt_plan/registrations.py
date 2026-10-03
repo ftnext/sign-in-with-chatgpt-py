@@ -18,7 +18,16 @@ REGISTRATION_FILE = "registration.json"
 LOCK_FILE = "runtime.lock"
 SCHEMA_VERSION = 1
 REGISTRATION_KEYS = frozenset(
-    {"schema_version", "host_id", "client_id", "issuer", "subject", "email", "name"}
+    {
+        "schema_version",
+        "host_id",
+        "client_id",
+        "client_kind",
+        "issuer",
+        "subject",
+        "email",
+        "name",
+    }
 )
 
 

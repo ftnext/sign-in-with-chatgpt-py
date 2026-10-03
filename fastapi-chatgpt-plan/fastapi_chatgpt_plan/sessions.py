@@ -6,10 +6,11 @@ data (see registrations.py) is persisted.
 """
 
 import asyncio
-import contextlib
 import secrets
 import time
 from dataclasses import dataclass, field
+
+from .errors import AuthError, PublicError
 
 SESSION_TTL_SECONDS = 24 * 3600
 TRANSACTION_TTL_SECONDS = 600
@@ -24,6 +25,7 @@ class Session:
     created_at: float
     expires_at: float
     authenticated: bool
+    generation: int | None = None
 
 
 @dataclass
@@ -35,6 +37,8 @@ class OAuthTransaction:
     client_id: str | None
     session_id: str
     expires_at: float
+    generation: int = 0
+    public_identity: bool = False
 
 
 @dataclass
@@ -60,7 +64,7 @@ class MemoryState:
     transactions: dict = field(default_factory=dict)
     connection: Connection | None = None
     models_cache: dict | None = None
-    active_streams: set = field(default_factory=set)
+    active_streams: dict = field(default_factory=dict)
     generation: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -79,6 +83,7 @@ class MemoryState:
                 created_at=time.time(),
                 expires_at=time.time() + SESSION_TTL_SECONDS,
                 authenticated=authenticated,
+                generation=self.generation if authenticated else None,
             )
             self.sessions[session.id] = session
             return session
@@ -106,6 +111,7 @@ class MemoryState:
                 created_at=time.time(),
                 expires_at=time.time() + SESSION_TTL_SECONDS,
                 authenticated=True,
+                generation=self.generation,
             )
             self.sessions[new.id] = new
             return new
@@ -116,7 +122,13 @@ class MemoryState:
                 self.sessions.pop(session_id, None)
 
     async def begin_transaction(
-        self, session_id: str, verifier: str, redirect_uri: str, client_id: str | None
+        self,
+        session_id: str,
+        verifier: str,
+        redirect_uri: str,
+        client_id: str | None,
+        *,
+        public_identity: bool = False,
     ) -> OAuthTransaction:
         tx = OAuthTransaction(
             state=secrets.token_urlsafe(32),
@@ -126,6 +138,8 @@ class MemoryState:
             client_id=client_id,
             session_id=session_id,
             expires_at=time.time() + TRANSACTION_TTL_SECONDS,
+            generation=self.generation,
+            public_identity=public_identity,
         )
         async with self.lock:
             now = time.time()
@@ -165,15 +179,86 @@ class MemoryState:
             self.connection = None
             self.models_cache = None
 
-    def register_stream(self, stream) -> None:
-        self.active_streams.add(stream)
+    async def finish_sign_in(self, connection, tx, commit):
+        """Commit verified registration and browser identity as one transition."""
+        async with self.lock:
+            session = self.sessions.get(tx.session_id)
+            if (
+                self.generation != tx.generation
+                or session is None
+                or session.expires_at <= time.time()
+            ):
+                raise AuthError("invalid_state")
+            commit()
+            streams = list(self.active_streams)
+            self.active_streams.clear()
+            self.generation += 1
+            connection.generation = self.generation
+            self.connection = connection
+            self.models_cache = None
+            self.sessions.pop(session.id, None)
+            rotated = Session(
+                self._new_session_id(),
+                secrets.token_urlsafe(32),
+                time.time(),
+                time.time() + SESSION_TTL_SECONDS,
+                True,
+                self.generation,
+            )
+            self.sessions[rotated.id] = rotated
+        await self._close_streams(streams)
+        return rotated
+
+    async def logout(self, session):
+        """Detach only this authenticated generation before any network wait."""
+        async with self.lock:
+            connection = self.connection
+            if (
+                not session.authenticated
+                or connection is None
+                or session.generation != connection.generation
+            ):
+                raise PublicError("sign_in_required", "Not signed in.", 401)
+            generation = connection.generation
+            self.generation += 1
+            self.connection = None
+            self.models_cache = None
+            self.sessions = {
+                key: value
+                for key, value in self.sessions.items()
+                if value.generation != generation
+            }
+            self.transactions = {
+                key: value
+                for key, value in self.transactions.items()
+                if value.generation != generation
+            }
+            streams = [s for s, g in self.active_streams.items() if g == generation]
+            for stream in streams:
+                self.active_streams.pop(stream, None)
+        await self._close_streams(streams)
+        return connection
+
+    def is_current(self, connection) -> bool:
+        return (
+            self.connection is connection and self.generation == connection.generation
+        )
+
+    def register_stream(self, stream, connection) -> bool:
+        if not self.is_current(connection):
+            return False
+        self.active_streams[stream] = connection.generation
+        return True
 
     def unregister_stream(self, stream) -> None:
-        self.active_streams.discard(stream)
+        self.active_streams.pop(stream, None)
 
     async def close_streams(self) -> None:
         streams = list(self.active_streams)
         self.active_streams.clear()
+        await self._close_streams(streams)
+
+    @staticmethod
+    async def _close_streams(streams):
         for stream in streams:
-            with contextlib.suppress(Exception):
-                await stream.aclose()
+            await stream.aclose()
