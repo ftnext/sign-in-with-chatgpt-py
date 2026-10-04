@@ -238,6 +238,33 @@ def test_connection_generation_backfills_and_bumps(state_dir):
         assert store.load_credentials()["generation"] == 2
 
 
+def test_retire_connection_wipes_tokens_and_keeps_identity(state_dir):
+    with storage.locked_store(state_dir) as store:
+        store.save_credentials(
+            {
+                "client_id": "c",
+                "issuer": "i",
+                "subject": "s",
+                "email": "e",
+                "access_token": "a",
+                "refresh_token": "r",
+                "id_token": "it",
+                "scopes": ["openid"],
+                "expires_at": 1.0,
+            }
+        )
+        generation, before = store.retire_connection()
+        assert generation == 1
+        assert before["refresh_token"] == "r"  # returned for revocation
+        assert store.load_credentials() == {
+            "client_id": "c",
+            "issuer": "i",
+            "subject": "s",
+            "email": "e",
+            "generation": 1,
+        }
+
+
 def test_pending_registration_scoped_to_generation(state_dir):
     with storage.locked_store(state_dir) as store:
         assert store.load_pending() is None

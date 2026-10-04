@@ -397,6 +397,19 @@ class TestCallbackQuery:
                 expected_state="s",
             )
 
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "state=s",  # truncated paste: no code, no error
+            "state=s&foo=bar",
+            "state=s&code=",
+        ],
+    )
+    def test_no_result_params_rejected(self, query):
+        # a callback with neither code nor error must not end the attempt
+        with pytest.raises(AuthError, match="invalid_callback_url"):
+            callback_query(REDIRECT_URI, REDIRECT_URI + "?" + query, expected_state="s")
+
     def test_error_callback_validates_state(self):
         # an error callback with a foreign state is still rejected
         with pytest.raises(AuthError, match="invalid_state"):
@@ -454,15 +467,33 @@ class TestWaitForResult:
         warnings = []
         try:
             tty.feed("http://example.com/not-the-callback")
+            # a truncated paste (state but no code) must not end the wait
+            tty.feed(listener.redirect_uri + "?state=state-1")
             tty.feed(listener.redirect_uri + "?state=state-1&code=c3&client_id=i3")
             result = wait_for_result(
                 listener, time.monotonic() + 5, stream=tty, warn=warnings.append
             )
             assert result["code"] == "c3"
-            assert warnings
+            assert len(warnings) == 2
             assert "Rejected" in warnings[0]
             # the rejected URL is never echoed into the warning
             assert "example.com" not in warnings[0]
+        finally:
+            listener.close()
+            tty.close()
+
+    def test_input_after_callback_line_is_left_in_stream(self):
+        # input queued behind the pasted URL belongs to the shell, not us
+        listener = self.listener()
+        tty = FakeTTY()
+        try:
+            tty.feed(listener.redirect_uri + "?state=state-1&code=c&client_id=i")
+            tty.feed("echo leftover")
+            result = wait_for_result(
+                listener, time.monotonic() + 5, stream=tty, warn=lambda m: None
+            )
+            assert result["code"] == "c"
+            assert os.read(tty._read_fd, 100) == b"echo leftover\n"
         finally:
             listener.close()
             tty.close()

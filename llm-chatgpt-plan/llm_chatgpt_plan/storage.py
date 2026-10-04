@@ -208,6 +208,29 @@ class Store:
         self.save_credentials(credentials)
         return credentials["generation"], credentials
 
+    _KEPT_CONNECTION_KEYS = ("client_id", "issuer", "subject", "email", "name")
+
+    def retire_connection(self) -> tuple[int, dict]:
+        """Wipe tokens now and bump the generation; identity keys survive.
+
+        Doing both under one lock means an interrupted sign-out still
+        leaves the connection locally dead: a concurrent sign-in either
+        aborts on the generation bump or lands a newer record afterwards.
+        Returns (new generation, pre-wipe credentials).
+        """
+        credentials = self.load_credentials() or {}
+        generation = credentials.get("generation")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            generation = 0
+        kept = {
+            key: credentials[key]
+            for key in self._KEPT_CONNECTION_KEYS
+            if key in credentials
+        }
+        kept["generation"] = generation + 1
+        self.save_credentials(kept)
+        return kept["generation"], credentials
+
     def __init__(self, directory: Path, *, dir_fd=None):
         self.directory = directory.parent.resolve() / directory.name
         self.dir_fd = dir_fd

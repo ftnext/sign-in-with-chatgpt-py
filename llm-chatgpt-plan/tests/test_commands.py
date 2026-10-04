@@ -332,6 +332,24 @@ class TestLogout:
         assert "Not signed in" in result.output
         assert auth_server.revoke_requests == []
 
+    def test_interrupted_revocation_still_signed_out_locally(
+        self, runner, auth_server, stored_connection, state_dir, monkeypatch
+    ):
+        mock_http(monkeypatch, auth_server)
+        monkeypatch.setattr(
+            OAuth,
+            "revoke_refresh_token",
+            lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        result = runner.invoke(chatgpt_plan, ["logout"])
+        assert result.exit_code != 0
+        # the tokens were wiped before revocation, so aborting cannot
+        # leave usable credentials behind
+        saved = storage.read_credentials(state_dir)
+        assert "refresh_token" not in saved
+        assert "access_token" not in saved
+        assert saved["client_id"] == ISSUED_CLIENT_ID
+
     def test_new_login_during_logout_is_not_wiped(
         self, runner, auth_server, stored_connection, state_dir, monkeypatch
     ):

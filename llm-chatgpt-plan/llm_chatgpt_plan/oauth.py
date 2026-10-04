@@ -383,6 +383,10 @@ def callback_query(redirect_uri, text, *, expected_state=None):
         query.get("state", ""), expected_state
     ):
         raise AuthError("invalid_state")
+    if not (query.get("code") or query.get("error")):
+        # Neither a grant nor a decline: no usable result exists, so this
+        # must not end the attempt (a truncated paste stays recoverable).
+        raise AuthError("invalid_callback_url")
     return query
 
 
@@ -466,8 +470,9 @@ def wait_for_result(listener, deadline, stream=None, warn=None):
     A pasted URL is only read when ``stream`` is interactive (a TTY); any
     input that fails validation is reported through ``warn`` and the wait
     continues. On non-interactive streams only the HTTP callback is watched.
-    No background thread is created. Raw reads keep an explicit line buffer
-    so buffered input cannot hide a completed line from ``select``.
+    No background thread is created. Byte-wise reads stop exactly at the
+    newline that completes the pasted URL, so input queued behind it is
+    left in the terminal for the shell, not swallowed by sign-in.
     """
     warn = warn or (lambda message: print(message, file=sys.stderr))
     try:
@@ -477,7 +482,7 @@ def wait_for_result(listener, deadline, stream=None, warn=None):
         interactive = False
     if not interactive:
         return listener.wait(max(0.0, deadline - time.monotonic()))
-    pending = ""
+    pending = bytearray()
     while True:
         result = listener.wait(0)
         if result is not None:
@@ -485,20 +490,26 @@ def wait_for_result(listener, deadline, stream=None, warn=None):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
-        if "\n" not in pending:
-            readable, _, _ = select.select(
-                [fd], [], [], min(remaining, POLL_INTERVAL_SECONDS)
-            )
-            if not readable:
-                continue
-            chunk = os.read(fd, 8192)
-            if not chunk:
-                # EOF: only the loopback callback can still complete this
-                return listener.wait(max(0.0, deadline - time.monotonic()))
-            pending += chunk.decode("utf-8", "replace")
+        readable, _, _ = select.select(
+            [fd], [], [], min(remaining, POLL_INTERVAL_SECONDS)
+        )
+        if not readable:
             continue
-        line, pending = pending.split("\n", 1)
-        text = line.strip()
+        byte = os.read(fd, 1)
+        if not byte:
+            # EOF: only the loopback callback can still complete this
+            return listener.wait(max(0.0, deadline - time.monotonic()))
+        if byte != b"\n":
+            pending += byte
+            if len(pending) > 65536:
+                warn(
+                    "Rejected pasted URL (too long). Paste the full address "
+                    "the browser was redirected to."
+                )
+                pending.clear()
+            continue
+        text = pending.decode("utf-8", "replace").strip()
+        pending.clear()
         if not text:
             continue
         try:

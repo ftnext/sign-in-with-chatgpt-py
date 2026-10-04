@@ -248,11 +248,15 @@ def logout():
     try:
         with client.make_http_client(timeout=30) as http:
             with storage.locked_store() as store:
-                # Bump the generation first so any in-flight sign-in or
-                # refresh cannot resurrect this connection afterwards.
-                generation, credentials = store.bump_generation()
-                refresh_token = credentials.get("refresh_token")
-                client_id = credentials.get("client_id")
+                # Wipe tokens before the network call: an interrupted or
+                # stalled revocation must not leave usable credentials
+                # behind. The generation bump inside retire_connection
+                # both aborts in-flight sign-ins and lets a brand-new one
+                # land safely while revocation is still in flight.
+                _generation, credentials = store.retire_connection()
+                store.delete_models()
+            refresh_token = credentials.get("refresh_token")
+            client_id = credentials.get("client_id")
             if not refresh_token or not client_id:
                 click.echo("Not signed in.")
                 return
@@ -260,24 +264,6 @@ def logout():
                 confirmed = OAuth(http).revoke_refresh_token(client_id, refresh_token)
             except (AuthError, httpx.HTTPError, ValueError, KeyError):
                 confirmed = False
-            with storage.locked_store() as store:
-                current = store.load_credentials() or {}
-                if current.get("generation") == generation:
-                    # Only wipe if no new sign-in landed meanwhile.
-                    kept = {
-                        key: current[key]
-                        for key in (
-                            "client_id",
-                            "issuer",
-                            "subject",
-                            "email",
-                            "name",
-                            "generation",
-                        )
-                        if key in current
-                    }
-                    store.save_credentials(kept)
-                    store.delete_models()
         if confirmed:
             click.echo("Signed out. The ChatGPT session was revoked remotely.")
         else:
