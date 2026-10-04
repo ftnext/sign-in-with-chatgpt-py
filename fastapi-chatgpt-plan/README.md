@@ -11,7 +11,28 @@ frontend on the same origin (`http://127.0.0.1:<port>`).
 Supported platforms: macOS and Linux (the process lock uses `fcntl`). One
 ChatGPT connection at a time, one process, one worker.
 
-## Setup
+## Install from PyPI
+
+Requires Python 3.11 or later. Install the command with uv:
+
+```bash
+uv tool install fastapi-chatgpt-plan
+```
+
+Start the server with ChatGPT plan inference enabled:
+
+```bash
+CHATGPT_PLAN_ENABLED=true fastapi-chatgpt-plan
+```
+
+Open `http://127.0.0.1:8000/` and select **Continue with ChatGPT** to sign in
+and approve plan access.
+
+Plan inference is disabled by default. A fresh installation started without
+`CHATGPT_PLAN_ENABLED=true` requires an issued public identity client ID;
+see [Running](#running) for identity-only setup.
+
+## Setup from source
 
 ```bash
 cd fastapi-chatgpt-plan
