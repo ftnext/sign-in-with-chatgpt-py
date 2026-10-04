@@ -1,5 +1,6 @@
-"""The ``llm chatgpt-plan`` command group: login and models."""
+"""The ``llm chatgpt-plan`` command group: login, models, and logout."""
 
+import sys
 import time
 import webbrowser
 
@@ -56,12 +57,33 @@ def _auth_exception(exc: AuthError) -> click.ClickException:
         ),
         "sign_in_declined": "Sign-in was declined in the browser.",
         "expired_sign_in": "The sign-in attempt expired. Run login again.",
+        "connection_changed": (
+            "The connection changed while signing in. Run llm chatgpt-plan login again."
+        ),
     }
     message = guidance.get(
         code,
         f"Sign-in failed: {code}. Run llm chatgpt-plan login to try again.",
     )
     return click.ClickException(message)
+
+
+def _show_manual_url(url, browser_failed):
+    if browser_failed:
+        click.echo("Could not open a browser automatically.", err=True)
+    click.echo("Open this URL to sign in with ChatGPT and approve plan usage:")
+    click.echo(url)
+    if sys.stdin.isatty():
+        click.echo(
+            "After approving, the browser is redirected to a local address. "
+            "If the redirect does not reach this machine, copy the full URL "
+            "from the address bar and paste it here."
+        )
+    else:
+        click.echo(
+            "Pasted URLs are not accepted in this session; complete the "
+            "sign-in in a browser that can reach this machine."
+        )
 
 
 @chatgpt_plan.command()
@@ -71,6 +93,12 @@ def _auth_exception(exc: AuthError) -> click.ClickException:
     help="Replace the current connection with a new sign-in",
 )
 @click.option(
+    "--manual",
+    is_flag=True,
+    help="Show the sign-in URL instead of opening a browser; the loopback "
+    "callback or a pasted callback URL completes sign-in",
+)
+@click.option(
     "--timeout",
     type=int,
     default=oauth.DEFAULT_TIMEOUT_SECONDS,
@@ -78,7 +106,7 @@ def _auth_exception(exc: AuthError) -> click.ClickException:
     help="Seconds to wait for browser sign-in (1-600)",
 )
 @click.option("--port", type=int, default=0, help="Callback port (0 = automatic)")
-def login(replace, timeout, port):
+def login(replace, manual, timeout, port):
     "Sign in with ChatGPT and save OAuth credentials for this llm"
     if not 1 <= timeout <= oauth.MAX_TIMEOUT_SECONDS:
         raise click.ClickException("--timeout must be between 1 and 600")
@@ -86,19 +114,25 @@ def login(replace, timeout, port):
         raise click.ClickException("--port must be 0 or between 1024 and 65535")
     try:
         with (
-            storage.locked_store() as store,
+            storage.login_lock(),
             client.make_http_client(timeout=30) as http,
         ):
-            click.echo(
-                "Opening a browser to sign in with ChatGPT and approve plan usage..."
-            )
+            if not manual:
+                click.echo(
+                    "Opening a browser to sign in with ChatGPT and approve "
+                    "plan usage..."
+                )
             record = oauth.login_flow(
-                store,
+                storage.state_dir(),
                 http,
                 replace=replace,
+                manual=manual,
                 timeout=timeout,
                 port=port,
                 open_browser=webbrowser.open,
+                show_url=_show_manual_url,
+                input_stream=sys.stdin,
+                warn=lambda message: click.echo(message, err=True),
             )
             click.echo("Signed in and verified ChatGPT plan access.")
             try:
@@ -110,7 +144,25 @@ def login(replace, timeout, port):
                     err=True,
                 )
                 return
-            _save_models(store, record, models)
+            with storage.locked_store() as store:
+                current = store.load_credentials() or {}
+                if (
+                    current.get("client_id"),
+                    current.get("subject"),
+                    current.get("generation"),
+                ) != (
+                    record.get("client_id"),
+                    record.get("subject"),
+                    record.get("generation"),
+                ):
+                    click.echo(
+                        "Signed in, but the connection changed before the "
+                        "model list could be saved. Run: "
+                        "llm chatgpt-plan models --refresh",
+                        err=True,
+                    )
+                    return
+                _save_models(store, record, models)
             click.echo(f"Saved {len(models)} model(s).")
             click.echo("List them with: llm chatgpt-plan models")
             click.echo("Prompt with: llm -m " + MODEL_ID_PREFIX + "<slug> '...'")
@@ -184,3 +236,49 @@ def models_command(refresh):
         ) from exc
     except KeyboardInterrupt:
         raise click.ClickException("Refresh aborted.") from None
+
+
+@chatgpt_plan.command()
+def logout():
+    """Sign out: revoke the remote session and remove local tokens.
+
+    Keeps the issued client ID and verified identity so the next login can
+    reuse them; clears tokens, scopes, expiry, and the model cache.
+    """
+    try:
+        with client.make_http_client(timeout=30) as http:
+            with storage.locked_store() as store:
+                # Wipe tokens before the network call: an interrupted or
+                # stalled revocation must not leave usable credentials
+                # behind. The generation bump inside retire_connection
+                # both aborts in-flight sign-ins and lets a brand-new one
+                # land safely while revocation is still in flight.
+                _generation, credentials = store.retire_connection()
+                store.delete_models()
+            refresh_token = credentials.get("refresh_token")
+            client_id = credentials.get("client_id")
+            if not refresh_token or not client_id:
+                click.echo("Not signed in.")
+                return
+            try:
+                confirmed = OAuth(http).revoke_refresh_token(client_id, refresh_token)
+            except (AuthError, httpx.HTTPError, ValueError, KeyError):
+                confirmed = False
+        if confirmed:
+            click.echo("Signed out. The ChatGPT session was revoked remotely.")
+        else:
+            click.echo("Signed out locally.")
+            click.echo(
+                "Could not confirm the remote session was revoked. To "
+                "disconnect this app completely, remove it in ChatGPT under "
+                "Settings > Security and login > Sign in with ChatGPT.",
+                err=True,
+            )
+    except StorageError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        raise click.ClickException(
+            f"Could not reach the auth server or local state: {exc}"
+        ) from exc
+    except KeyboardInterrupt:
+        raise click.ClickException("Sign-out aborted.") from None

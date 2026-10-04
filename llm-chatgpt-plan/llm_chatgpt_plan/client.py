@@ -74,7 +74,7 @@ def stream_response(
     http,
     token,
     slug,
-    prompt_text,
+    input_items,
     instructions=None,
     reasoning_effort=None,
     outcome=None,
@@ -95,7 +95,7 @@ def stream_response(
     )
     kwargs = {
         "model": slug,
-        "input": [{"role": "user", "content": prompt_text}],
+        "input": input_items,
         "store": False,
         "stream": True,
     }
@@ -145,7 +145,9 @@ def stream_response(
                         raise usage_limit_error()
                     detail = f" ({code}: {message})" if code or message else ""
                     raise ApiError(
-                        redact(f"Response stream ended as {event_type}{detail}", (token,))
+                        redact(
+                            f"Response stream ended as {event_type}{detail}", (token,)
+                        )
                     )
         except ApiError:
             raise

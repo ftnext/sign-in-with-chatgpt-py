@@ -5,6 +5,7 @@ import httpx
 import llm
 import pytest
 from llm.models import Prompt
+from llm.parts import Message, ReasoningPart, TextPart
 
 import llm_chatgpt_plan
 from llm_chatgpt_plan import client, storage
@@ -61,6 +62,7 @@ class TestRegistration:
         assert "chatgpt-plan" in cli.commands
         assert set(cli.commands["chatgpt-plan"].commands) == {
             "login",
+            "logout",
             "models",
         }
 
@@ -196,21 +198,6 @@ class TestExecute:
             run(model, make_prompt(model), stream=False)
         assert "request" not in api_capture
 
-    def test_conversation_history_rejected(self, api_capture):
-        model = ChatGPTPlan("gpt-5.6-luna")
-        conversation = model.conversation()
-        conversation.responses.append(object())
-        with pytest.raises(llm.ModelError, match="single"):
-            run(model, make_prompt(model), conversation=conversation)
-        assert "request" not in api_capture
-
-    def test_loaded_history_rejected(self, api_capture):
-        model = ChatGPTPlan("gpt-5.6-luna")
-        conversation = model.conversation()
-        conversation.loaded_messages = [{"role": "user", "content": "x"}]
-        with pytest.raises(llm.ModelError, match="single"):
-            run(model, make_prompt(model), conversation=conversation)
-
     def test_first_turn_of_conversation_allowed(self, api_capture):
         model = ChatGPTPlan("gpt-5.6-luna")
         conversation = model.conversation()
@@ -255,6 +242,158 @@ class TestExecute:
         model = ChatGPTPlan("gpt-5.6-luna")
         with pytest.raises(llm.ModelError, match="login"):
             run(model, make_prompt(model))
+
+
+class TestContinuation:
+    """prompt.messages is the single source: history becomes input items."""
+
+    def test_history_replayed_in_order(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[
+                Message(role="system", parts=[TextPart("S")]),
+                Message(role="user", parts=[TextPart("u1")]),
+                Message(role="assistant", parts=[TextPart("a1")]),
+                Message(role="user", parts=[TextPart("u2")]),
+            ],
+        )
+        run(model, prompt)
+        body = api_capture["body"]
+        assert body["input"] == [
+            {"role": "user", "content": "u1"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_1",
+                "content": [{"type": "output_text", "text": "a1", "annotations": []}],
+            },
+            {"role": "user", "content": "u2"},
+        ]
+        # system text is sent as instructions, never as a system input item
+        assert body["instructions"] == "S"
+        assert "previous_response_id" not in body
+        assert "conversation" not in body
+        assert body["store"] is False
+
+    def test_loaded_conversation_replayed(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        conversation = model.conversation()
+        conversation.loaded_messages = [
+            {"role": "user", "content": [{"type": "text", "text": "old-q"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "old-a"}]},
+        ]
+        response = conversation.prompt("next-q")
+        run(model, response.prompt, conversation=conversation)
+        body = api_capture["body"]
+        roles = [item.get("role") for item in body["input"]]
+        assert roles == ["user", "assistant", "user"]
+        assert body["input"][0]["content"] == "old-q"
+        assert body["input"][1]["content"][0]["text"] == "old-a"
+        assert body["input"][1]["content"][0]["type"] == "output_text"
+        assert body["input"][2]["content"] == "next-q"
+        assert "instructions" not in body
+
+    def test_conversation_system_not_duplicated(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        response = model.conversation().prompt("hi", system="sys-1")
+        run(model, response.prompt)
+        # llm bakes --system into the chain; it must appear exactly once
+        assert api_capture["body"]["instructions"] == "sys-1"
+
+    def test_explicit_messages_with_system_kwarg(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[Message(role="user", parts=[TextPart("u1")])],
+            system="sys-x",
+        )
+        run(model, prompt)
+        assert api_capture["body"]["instructions"] == "sys-x"
+
+    def test_assistant_id_and_developer_role(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[
+                {"role": "developer", "parts": [{"type": "text", "text": "D"}]},
+                {"role": "user", "content": "q"},
+            ],
+        )
+        run(model, prompt)
+        body = api_capture["body"]
+        assert body["instructions"] == "D"
+        assert body["input"] == [{"role": "user", "content": "q"}]
+
+    def test_redacted_empty_reasoning_is_skipped(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[
+                Message(
+                    role="assistant",
+                    parts=[ReasoningPart(redacted=True), TextPart("a1")],
+                ),
+                Message(role="user", parts=[TextPart("u2")]),
+            ],
+        )
+        run(model, prompt)
+        body = api_capture["body"]
+        assert body["input"][0]["content"][0]["text"] == "a1"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            Message(role="tool", parts=[TextPart("out")]),
+            Message(role="assistant", parts=[ReasoningPart(text="thought")]),
+            Message(
+                role="user",
+                parts=[
+                    llm.parts.AttachmentPart(attachment=llm.Attachment(content=b"x"))
+                ],
+            ),
+            {"role": "tool", "content": "out"},
+            {"role": "assistant", "content": [{"type": "refusal", "refusal": "n"}]},
+            {"role": "user", "parts": [{"type": "tool_call", "name": "t"}]},
+        ],
+        ids=[
+            "tool-role",
+            "reasoning-text",
+            "attachment-part",
+            "dict-tool-role",
+            "dict-refusal",
+            "dict-tool-call",
+        ],
+    )
+    def test_non_text_history_rejected(self, api_capture, message):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[
+                message,
+                Message(role="user", parts=[TextPart("hi")]),
+            ],
+        )
+        with pytest.raises(llm.ModelError, match="chatgpt-plan"):
+            run(model, prompt)
+        assert "request" not in api_capture
+
+    def test_empty_input_rejected(self, api_capture):
+        model = ChatGPTPlan("gpt-5.6-luna")
+        prompt = Prompt(
+            "",
+            model=model,
+            messages=[Message(role="system", parts=[TextPart("only-sys")])],
+        )
+        with pytest.raises(llm.ModelError, match="Nothing to send"):
+            run(model, prompt)
+        assert "request" not in api_capture
 
 
 @pytest.fixture
@@ -460,7 +599,7 @@ def test_inference_uses_coherent_snapshot_and_releases_lock(
 ):
     original = client.stream_response
 
-    def replace_then_stream(http, token, slug, text, **kwargs):
+    def replace_then_stream(http, token, slug, input_items, **kwargs):
         # A replacement after the snapshot must not change its bearer token.
         # Acquiring the lock here also proves it isn't held during streaming.
         with storage.locked_store(state_dir) as store:
@@ -470,7 +609,7 @@ def test_inference_uses_coherent_snapshot_and_releases_lock(
             store.save_models(
                 {"client_id": "B", "subject": "B", "models": [{"slug": "only-B"}]}
             )
-        return original(http, token, slug, text, **kwargs)
+        return original(http, token, slug, input_items, **kwargs)
 
     monkeypatch.setattr(client, "stream_response", replace_then_stream)
     model = ChatGPTPlan("gpt-5.6-luna")

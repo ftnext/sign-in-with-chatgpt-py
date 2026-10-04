@@ -5,7 +5,7 @@ import httpx
 import llm
 from pydantic import Field
 
-from . import client, storage
+from . import client, messages, storage
 from .client import ApiError
 from .oauth import AuthError, OAuth
 from .storage import StorageError
@@ -21,26 +21,6 @@ AUTH_GUIDANCE = {
         "settings: " + client.USAGE_URL
     ),
 }
-
-
-def _role(message):
-    if isinstance(message, dict):
-        return message.get("role")
-    return getattr(message, "role", None)
-
-
-def _has_history(prompt, conversation) -> bool:
-    """Detect prior turns without rejecting llm's always-present conversation."""
-    if conversation is not None:
-        if getattr(conversation, "responses", None):
-            return True
-        if getattr(conversation, "loaded_messages", None):
-            return True
-    # A first turn is: optional system message(s) plus exactly one user
-    # message. Anything else means history was supplied programmatically.
-    messages = getattr(prompt, "messages", None) or []
-    non_system = [m for m in messages if _role(m) != "system"]
-    return len(non_system) > 1 or any(_role(m) != "user" for m in non_system)
 
 
 class ChatGPTPlan(llm.Model):
@@ -63,6 +43,7 @@ class ChatGPTPlan(llm.Model):
 
     def execute(self, prompt, stream, response, conversation):
         self._validate_request(prompt, stream, conversation)
+        input_items, instructions = messages.responses_input(prompt)
         token = None
         try:
             with client.make_http_client(timeout=90) as http:
@@ -78,8 +59,8 @@ class ChatGPTPlan(llm.Model):
                     http,
                     token,
                     self.slug,
-                    prompt.prompt,
-                    instructions=prompt.system or None,
+                    input_items,
+                    instructions=instructions,
                     reasoning_effort=prompt.options.reasoning_effort,
                     outcome=outcome,
                 )
@@ -102,11 +83,6 @@ class ChatGPTPlan(llm.Model):
         if not stream:
             raise llm.ModelError(
                 "chatgpt-plan models only support streaming; remove --no-stream"
-            )
-        if _has_history(prompt, conversation):
-            raise llm.ModelError(
-                "chatgpt-plan supports single prompts only; conversation "
-                "history is not supported yet"
             )
         if prompt.attachments:
             raise llm.ModelError("chatgpt-plan does not support attachments")

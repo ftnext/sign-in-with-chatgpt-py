@@ -31,6 +31,16 @@ Sign in once. A browser opens for ChatGPT sign-in and plan approval:
 llm chatgpt-plan login
 ```
 
+No working browser on this machine? Pass `--manual` to print the sign-in
+URL instead (a failed browser launch falls back to this automatically).
+Complete the sign-in in any browser; if the redirect back to this machine
+does not reach it, paste the full callback URL from the browser's address
+bar when prompted (interactive terminals only):
+
+```bash
+llm chatgpt-plan login --manual
+```
+
 This fetches your account's model list and saves it. List the saved models
 (any model `llm` sees is also registered as `chatgpt-plan/<slug>`):
 
@@ -66,17 +76,38 @@ When omitted, no `reasoning` field is sent and the model's default applies:
 llm -m chatgpt-plan/gpt-5.6-luna -o reasoning_effort low 'What is OAuth?'
 ```
 
+Continue a conversation with `-c`/`--continue` or `llm chat`; earlier text
+turns are resent to the API on each call (the plugin never uses
+`previous_response_id`):
+
+```bash
+llm -m chatgpt-plan/gpt-5.6-luna -c 'And the same for PKCE?'
+```
+
+Sign out, revoking the session remotely when possible:
+
+```bash
+llm chatgpt-plan logout
+```
+
 ## What is stored
 
 State lives in a `chatgpt-plan` directory inside the LLM user directory —
 the directory that contains the `logs.db` shown by `llm logs path`:
 
 - `credentials.json` — issued client ID, verified subject/issuer, access and
-  refresh tokens, granted scopes, expiry (mode `0600`)
+  refresh tokens, granted scopes, expiry, and a connection generation that
+  changes on sign-in replacement and sign-out (mode `0600`). After
+  `logout` it keeps only the client ID, identity, and generation
+- `pending.json` — a client ID issued by dynamic registration whose code
+  exchange did not finish, tied to the connection generation it was issued
+  for; the next sign-in reuses or discards it (mode `0600`)
 - `host.json` — a persistent host ID sent during dynamic client registration
 - `models.json` — the cached model list, tied to the connection's client ID
   and subject
 - `runtime.lock` — serializes updates between processes
+- `login.lock` — serializes sign-in attempts only, so a pending sign-in
+  never blocks prompts or token refreshes
 
 One connection is active at a time. To switch to a different account or
 workspace, run `llm chatgpt-plan login --replace`, which only replaces the
@@ -92,10 +123,10 @@ network, rate-limit, or server errors, retry later; the saved connection is kept
 These are rejected with a clear error instead of being silently ignored:
 
 - Non-streaming requests (`--no-stream`): this route requires streaming
-- Conversation history: single prompts only — `llm chat` works only for the
-  first message of a conversation; `-c`/`--cid` continuation is not supported
 - Attachments, tools, tool results, and structured output (`--schema`)
-- Multiple saved accounts and `logout`
+- Conversations containing non-text turns (tool calls, tool results,
+  attachments): continuation is limited to plain text turns
+- Multiple saved accounts: one connection is active at a time
 
 `llm` still records prompts and responses in its local log database as usual.
 That local logging is separate from the `store=False` flag sent to the API,
@@ -107,9 +138,12 @@ settings: https://chatgpt.com/settings/usage
 
 ## Disconnecting
 
-There is no logout command. To revoke this plugin's access, use ChatGPT →
-**Settings → Security and login → Sign in with ChatGPT**, then delete the
-`chatgpt-plan` directory inside the LLM user directory.
+`llm chatgpt-plan logout` revokes the refresh token through the discovery
+document's revocation endpoint and removes local tokens, scopes, expiry,
+and the model cache, keeping only the client ID and verified identity for
+the next sign-in. When the remote revocation cannot be confirmed, the local
+sign-out still completes; to disconnect fully in that case, use ChatGPT →
+**Settings → Security and login → Sign in with ChatGPT**.
 
 ## Reference scripts
 

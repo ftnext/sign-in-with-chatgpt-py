@@ -6,12 +6,15 @@ and ``scripts/ask.py`` for a single active connection.
 
 import base64
 import hashlib
+import os
 import secrets
+import select
+import sys
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 import jwt
@@ -35,6 +38,8 @@ AGENT_NAME_HINT = "llm-chatgpt-plan"
 REFRESH_MARGIN_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 300
 MAX_TIMEOUT_SECONDS = 600
+HINT_PARAMS = ("id_token_hint", "login_hint")
+POLL_INTERVAL_SECONDS = 0.1
 
 
 class OAuth:
@@ -53,6 +58,11 @@ class OAuth:
                 raise AuthError("invalid_issuer")
             for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
                 parsed = urlsplit(metadata[key])
+                if parsed.scheme != "https" or parsed.netloc != "auth.openai.com":
+                    raise AuthError("invalid_discovery")
+            revocation = metadata.get("revocation_endpoint")
+            if revocation is not None:
+                parsed = urlsplit(revocation)
                 if parsed.scheme != "https" or parsed.netloc != "auth.openai.com":
                     raise AuthError("invalid_discovery")
             self.discovery = metadata
@@ -91,7 +101,16 @@ class OAuth:
                 params["id_token_hint"] = prior["id_token"]
             if prior.get("email"):
                 params["login_hint"] = prior["email"]
+        tx["params"] = params
         return tx, metadata["authorization_endpoint"] + "?" + urlencode(params)
+
+    def manual_url(self, tx):
+        """Authorization URL safe to display: no ID token or login hints."""
+        metadata = self.metadata()
+        params = {
+            key: value for key, value in tx["params"].items() if key not in HINT_PARAMS
+        }
+        return metadata["authorization_endpoint"] + "?" + urlencode(params)
 
     def verify(self, token, client_id, nonce=None):
         try:
@@ -200,11 +219,12 @@ class OAuth:
             "expires_at": time.time() + expires,
         }
 
-    def complete(self, tx, query, store, persist_registration, prior_subject=None):
+    def complete(self, tx, query, persist_client_id=None, prior_subject=None):
         """Validate the callback, exchange the code, return the credential record.
 
-        ``persist_registration`` keeps the issued client ID from a first-time
-        dynamic registration even when the exchange later fails. It is off for
+        ``persist_client_id`` is a callable invoked with the issued client ID
+        before the code exchange, keeping first-time dynamic registrations
+        recoverable even when the exchange later fails. It stays None for
         ``login --replace`` so a failed attempt never disturbs the current
         connection.
         """
@@ -221,12 +241,8 @@ class OAuth:
             raise AuthError("client_id_mismatch")
         if not query.get("code"):
             raise AuthError("missing_code")
-        if persist_registration and not tx["client_id"]:
-            existing = store.load_credentials() or {}
-            if existing.get("client_id") != client_id:
-                # Keep only the issued ID: anything else on file cannot be
-                # trusted to belong to this registration.
-                store.save_credentials({"client_id": client_id})
+        if persist_client_id is not None and not tx["client_id"]:
+            persist_client_id(client_id)
         tokens = self.token_request(
             {
                 "grant_type": "authorization_code",
@@ -286,6 +302,40 @@ class OAuth:
             raise AuthError("plan_permission_required")
         return credentials["access_token"]
 
+    def revoke_refresh_token(self, client_id, refresh_token, *, attempts=3, sleep=None):
+        """POST the refresh token to the revocation endpoint.
+
+        Returns True only when the server confirmed with an empty 200.
+        Network failures and 5xx get a short finite retry; anything else is
+        a permanent "unconfirmed" so logout can still finish locally.
+        """
+        sleep = sleep or time.sleep
+        endpoint = self.metadata().get("revocation_endpoint")
+        if not endpoint:
+            return False
+        delay = 0.5
+        for attempt in range(attempts):
+            try:
+                response = self.http.post(
+                    endpoint,
+                    data={
+                        "token": refresh_token,
+                        "token_type_hint": "refresh_token",
+                        "client_id": client_id,
+                    },
+                )
+            except httpx.HTTPError:
+                response = None
+            if response is not None:
+                if response.status_code == 200:
+                    return True
+                if 400 <= response.status_code < 500:
+                    return False
+            if attempt + 1 < attempts:
+                sleep(delay)
+                delay = min(delay * 2, 4)
+        return False
+
     @staticmethod
     def _check_connection(credentials):
         if not credentials.get("access_token"):
@@ -299,6 +349,47 @@ class OAuth:
             raise AuthError("plan_permission_required")
 
 
+def callback_query(redirect_uri, text, *, expected_state=None):
+    """Turn a pasted callback URL into a query dict, validated for one attempt.
+
+    The URL's scheme, host, port, and path must equal the attempt's redirect
+    URI, and every query parameter must appear exactly once. Never includes
+    the pasted text in errors: it may carry an authorization code.
+    """
+    try:
+        pasted = urlsplit(text.strip())
+        pasted_port = pasted.port
+    except ValueError:
+        raise AuthError("invalid_callback_url") from None
+    expected = urlsplit(redirect_uri)
+    if (
+        pasted.scheme,
+        pasted.hostname,
+        pasted_port,
+        pasted.path,
+    ) != (
+        expected.scheme,
+        expected.hostname,
+        expected.port,
+        expected.path,
+    ):
+        raise AuthError("invalid_callback_url")
+    pairs = parse_qsl(pasted.query, keep_blank_values=True)
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise AuthError("invalid_callback_url")
+    query = dict(pairs)
+    if expected_state is not None and not secrets.compare_digest(
+        query.get("state", ""), expected_state
+    ):
+        raise AuthError("invalid_state")
+    if not (query.get("code") or query.get("error")):
+        # Neither a grant nor a decline: no usable result exists, so this
+        # must not end the attempt (a truncated paste stays recoverable).
+        raise AuthError("invalid_callback_url")
+    return query
+
+
 class CallbackListener:
     """One browser authorization result, received on a private loopback listener."""
 
@@ -306,6 +397,7 @@ class CallbackListener:
         self.result = None
         self.expected_state = None
         self._received = threading.Event()
+        self._lock = threading.Lock()
         listener = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -313,31 +405,32 @@ class CallbackListener:
                 pass  # Callback URLs contain a credential: do not log them.
 
             def do_GET(self):
-                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
-                valid = (
-                    self.headers.get("Host") == listener.host
-                    and urlsplit(self.path).path == "/auth/callback"
-                    and all(len(values) == 1 for values in query.values())
-                    and listener.expected_state is not None
-                    and secrets.compare_digest(
-                        query.get("state", [""])[0], listener.expected_state
-                    )
-                )
+                host = self.headers.get("Host")
+                expected_state = listener.expected_state
+                query = None
+                if expected_state is not None:
+                    try:
+                        query = callback_query(
+                            listener.redirect_uri,
+                            f"http://{host}{self.path}",
+                            expected_state=expected_state,
+                        )
+                    except (AuthError, ValueError):
+                        query = None
                 body = (
                     "Authorization received. Return to your terminal for the result."
-                    if valid
+                    if query is not None
                     else "This authorization result could not be verified."
                 ).encode()
-                self.send_response(200 if valid else 400)
+                self.send_response(200 if query is not None else 400)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 self.wfile.write(body)
-                if valid and listener.result is None:
-                    listener.result = {key: values[0] for key, values in query.items()}
-                    listener._received.set()
+                if query is not None:
+                    listener.submit(query)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.server.daemon_threads = True
@@ -348,6 +441,15 @@ class CallbackListener:
     def start(self, state):
         self.expected_state = state
         self.thread.start()
+
+    def submit(self, query):
+        """Record the attempt's result; only the first caller wins."""
+        with self._lock:
+            if self.result is not None:
+                return False
+            self.result = query
+            self._received.set()
+            return True
 
     def wait(self, timeout):
         """Wait for the authorization result; returns None on timeout."""
@@ -362,54 +464,161 @@ class CallbackListener:
         self.server.server_close()
 
 
+def wait_for_result(listener, deadline, stream=None, warn=None):
+    """Wait for the HTTP callback or a pasted callback URL; first wins.
+
+    A pasted URL is only read when ``stream`` is interactive (a TTY); any
+    input that fails validation is reported through ``warn`` and the wait
+    continues. On non-interactive streams only the HTTP callback is watched.
+    No background thread is created. Byte-wise reads stop exactly at the
+    newline that completes the pasted URL, so input queued behind it is
+    left in the terminal for the shell, not swallowed by sign-in.
+    """
+    warn = warn or (lambda message: print(message, file=sys.stderr))
+    try:
+        fd = stream.fileno() if stream is not None else -1
+        interactive = fd >= 0 and stream.isatty()
+    except (OSError, ValueError, AttributeError):
+        interactive = False
+    if not interactive:
+        return listener.wait(max(0.0, deadline - time.monotonic()))
+    pending = bytearray()
+    while True:
+        result = listener.wait(0)
+        if result is not None:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        readable, _, _ = select.select(
+            [fd], [], [], min(remaining, POLL_INTERVAL_SECONDS)
+        )
+        if not readable:
+            continue
+        byte = os.read(fd, 1)
+        if not byte:
+            # EOF: only the loopback callback can still complete this
+            return listener.wait(max(0.0, deadline - time.monotonic()))
+        if byte != b"\n":
+            pending += byte
+            if len(pending) > 65536:
+                warn(
+                    "Rejected pasted URL (too long). Paste the full address "
+                    "the browser was redirected to."
+                )
+                pending.clear()
+            continue
+        text = pending.decode("utf-8", "replace").strip()
+        pending.clear()
+        if not text:
+            continue
+        try:
+            query = callback_query(
+                listener.redirect_uri, text, expected_state=listener.expected_state
+            )
+        except AuthError as exc:
+            warn(
+                f"Rejected pasted URL ({exc}). Paste the full address the "
+                "browser was redirected to."
+            )
+            continue
+        if listener.submit(query):
+            return query
+        return listener.wait(0)
+
+
+def _default_show_url(url, browser_failed):
+    print(
+        "Open this URL in a browser to sign in with ChatGPT:\n" + url,
+        file=sys.stderr,
+    )
+
+
 def login_flow(
-    store,
+    directory,
     http,
     *,
     replace=False,
     timeout=DEFAULT_TIMEOUT_SECONDS,
     port=0,
     open_browser=webbrowser.open,
+    manual=False,
+    show_url=None,
+    input_stream=None,
+    warn=None,
 ):
-    """Run one browser sign-in against the store's single connection.
+    """Run one sign-in against the state directory's single connection.
 
     ``replace`` starts a fresh dynamic registration (for switching accounts);
     the previous connection is only overwritten after the new one verifies.
+    ``manual`` skips the browser entirely and shows a hint-free sign-in URL,
+    the same path a failed browser launch falls back to. The manual path
+    accepts either the loopback callback or a pasted callback URL on
+    ``input_stream``; only the first completed result is exchanged.
     Returns the verified credential record.
     """
     oauth = OAuth(http)
-    existing = store.load_credentials() or {}
-    client_id = None if replace else existing.get("client_id")
-    prior = existing if client_id else None
+    with locked_store(directory) as store:
+        existing = store.load_credentials() or {}
+        generation = store.connection_generation()
+        host_id = store.ensure_host_id()
+        pending = store.pending_for(generation) or {}
+    client_id = (
+        None if replace else existing.get("client_id") or pending.get("client_id")
+    )
+    prior = existing if client_id and existing.get("client_id") == client_id else None
     listener = CallbackListener(port)
     try:
         tx, url = oauth.begin(
             listener.redirect_uri,
-            host_id=store.ensure_host_id(),
+            host_id=host_id,
             client_id=client_id,
             prior=prior,
         )
         listener.start(tx["state"])
-        if not open_browser(url):
-            raise RuntimeError(
-                "Could not open a browser. Set a default browser and try again."
-            )
-        query = listener.wait(timeout)
+        deadline = time.monotonic() + timeout
+        browser_opened = False
+        if not manual:
+            try:
+                browser_opened = bool(open_browser(url))
+            except (OSError, RuntimeError, webbrowser.Error):
+                browser_opened = False
+        if browser_opened:
+            query = listener.wait(timeout)
+        else:
+            (show_url or _default_show_url)(oauth.manual_url(tx), not manual)
+            query = wait_for_result(listener, deadline, stream=input_stream, warn=warn)
         if query is None:
             raise TimeoutError(
                 f"Timed out waiting for sign-in after {timeout} seconds. "
                 "Run llm chatgpt-plan login again."
             )
+
+        persist_client_id = None
+        if not replace:
+
+            def persist_client_id(issued):
+                with locked_store(directory) as store:
+                    current = store.load_credentials() or {}
+                    if current.get("client_id") != issued:
+                        store.save_pending(
+                            {"client_id": issued, "generation": generation}
+                        )
+
         record = oauth.complete(
             tx,
             query,
-            store,
-            persist_registration=not replace,
+            persist_client_id=persist_client_id,
             prior_subject=prior.get("subject") if prior else None,
         )
         if PLAN_SCOPE not in record["scopes"]:
             raise AuthError("plan_permission_required")
-        store.save_credentials(record)
+        with locked_store(directory) as store:
+            if store.connection_generation() != generation:
+                raise AuthError("connection_changed")
+            record["generation"] = (generation or 0) + 1
+            store.save_credentials(record)
+            store.delete_pending()
         return record
     finally:
         listener.close()
