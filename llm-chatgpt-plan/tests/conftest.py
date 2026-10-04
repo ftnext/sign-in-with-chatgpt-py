@@ -82,6 +82,7 @@ DISCOVERY = {
     "authorization_endpoint": ISSUER + "/api/accounts/authorize",
     "token_endpoint": ISSUER + "/api/accounts/oauth/token",
     "jwks_uri": ISSUER + "/api/accounts/jwks",
+    "revocation_endpoint": ISSUER + "/api/accounts/oauth/revoke",
 }
 
 
@@ -96,6 +97,9 @@ class FakeAuthServer:
         self.id_token_override = None
         self.token_status = 200
         self.token_error = {"error": "invalid_grant"}
+        self.revoke_requests = []
+        self.revoke_statuses = []
+        self.revoke_body = b""
         self.models = [
             {
                 "slug": "gpt-5.6-luna",
@@ -140,6 +144,13 @@ class FakeAuthServer:
         if url == RESOURCE + "/models":
             self.models_requests.append(request)
             return httpx.Response(200, json={"models": self.models})
+        if url == DISCOVERY["revocation_endpoint"]:
+            self.revoke_requests.append(dict(parse_qsl(request.content.decode())))
+            if self.revoke_statuses:
+                status = self.revoke_statuses.pop(0)
+            else:
+                status = 200
+            return httpx.Response(status, content=self.revoke_body)
         return httpx.Response(404, json={"detail": "not found"})
 
     def client(self, **kwargs) -> httpx.Client:
