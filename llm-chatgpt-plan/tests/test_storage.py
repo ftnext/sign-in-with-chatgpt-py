@@ -154,7 +154,7 @@ def _hold_login_lock(directory, acquired, release):
 
 
 def test_lock_wait_acquires_after_other_process_releases(state_dir):
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     acquired = ctx.Event()
     release = ctx.Event()
     proc = ctx.Process(target=_hold_runtime_lock, args=(state_dir, acquired, release))
@@ -180,7 +180,7 @@ def test_lock_wait_acquires_after_other_process_releases(state_dir):
 
 
 def test_login_lock_blocks_second_signin_but_not_runtime(state_dir):
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     acquired = ctx.Event()
     release = ctx.Event()
     proc = ctx.Process(target=_hold_login_lock, args=(state_dir, acquired, release))
