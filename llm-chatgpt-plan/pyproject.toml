@@ -1,6 +1,6 @@
 [project]
 name = "llm-chatgpt-plan"
-version = "0.1.0"
+version = "0.2.0"
 description = "Use your ChatGPT plan via Sign in with ChatGPT OAuth"
 readme = "README.md"
 authors = [{name = "ftnext"}]
