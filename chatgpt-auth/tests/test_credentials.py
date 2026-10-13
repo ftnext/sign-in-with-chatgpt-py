@@ -84,6 +84,8 @@ class TestGetAccessToken:
         assert credentials.get_access_token() == "access-token-1"
         saved = storage.read_record(creds_path)
         assert saved["access_token"] == "access-token-1"
+        assert credentials.expires_at == saved["expires_at"]
+        assert credentials.expires_at > time.time() + 3000
 
     def test_generation_backfill_is_not_a_change(self, creds_path, patched_http):
         record = connected_record(expires_at=time.time() + 30)

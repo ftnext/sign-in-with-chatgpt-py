@@ -171,25 +171,30 @@ def _write_json(path: Path, data: dict, dir_fd: int) -> None:
             raise StorageError(f"Refusing to write through symlink: {path.name}")
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        raise StorageError(f"Could not inspect {path.name}: {exc}") from exc
     name = path.name + "." + secrets.token_hex(16)
-    fd = os.open(
-        name,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-        dir_fd=dir_fd,
-    )
     try:
-        with os.fdopen(fd, "w") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            json.dump(data, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-    finally:
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd,
+        )
         try:
-            os.unlink(name, dir_fd=dir_fd)
-        except FileNotFoundError:
-            pass
+            with os.fdopen(fd, "w") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(data, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        raise StorageError(f"Could not write {path.name}: {exc}") from exc
 
 
 def read_record(credentials_path: Path) -> dict | None:

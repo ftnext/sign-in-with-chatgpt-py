@@ -106,14 +106,27 @@ class Credentials:
                 "location and run: chatgpt-auth login"
             )
 
+    def _sync_snapshot(self):
+        record = read_record(self._path)
+        if not isinstance(record, dict):
+            return
+        expires_at = record.get("expires_at")
+        if isinstance(expires_at, (int, float)):
+            self._expires_at = expires_at
+        scopes = record.get("scopes")
+        if isinstance(scopes, list):
+            self._scopes = tuple(scopes)
+
     def get_access_token(self) -> str:
         """A valid access token; refreshes and saves when near expiry."""
         self._ensure_usable()
         try:
-            return service.ensure_access_token(self._path, self._identity)
+            token = service.ensure_access_token(self._path, self._identity)
         except service.UnrecoverableStorageError:
             self._broken = True
             raise
+        self._sync_snapshot()
+        return token
 
     def refresh(self) -> None:
         """Force a refresh now; the result is saved before returning."""
@@ -123,6 +136,7 @@ class Credentials:
         except service.UnrecoverableStorageError:
             self._broken = True
             raise
+        self._sync_snapshot()
 
     def __repr__(self):
         return (

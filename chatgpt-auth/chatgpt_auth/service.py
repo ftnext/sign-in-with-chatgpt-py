@@ -169,7 +169,9 @@ def _refresh_locked(store, record, http_factory):
             update = oauth.credentials(
                 tokens, record.get("scopes"), refresh_response=True
             )
-        except AuthError as exc:
+        except Exception as exc:
+            # The exchange already happened, so the refresh token may be
+            # consumed: any post-send failure retires the connection.
             _retire(store)
             raise ReauthorizationRequiredError(
                 "The token update could not be verified and the connection "

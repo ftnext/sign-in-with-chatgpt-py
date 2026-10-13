@@ -240,7 +240,8 @@ class OAuth:
             scopes = scope_value.split()
         else:
             raise AuthError("invalid_token_response")
-        if tokens.get("token_type", "").lower() != "bearer":
+        token_type = tokens.get("token_type")
+        if not isinstance(token_type, str) or token_type.lower() != "bearer":
             raise AuthError("invalid_token_response")
         if (
             not isinstance(tokens.get("access_token"), str)
