@@ -1,0 +1,36 @@
+[project]
+name = "chatgpt-auth"
+version = "0.1.0"
+description = "Sign in with ChatGPT: CLI and Python API for a single stored OAuth connection"
+readme = "README.md"
+authors = [{name = "ftnext"}]
+license = "Apache-2.0"
+classifiers = []
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28,<1",
+    "PyJWT[crypto]>=2.10,<3",
+    "click",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["chatgpt_auth*"]
+
+[tool.uv]
+package = true
+
+[project.scripts]
+chatgpt-auth = "chatgpt_auth.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ftnext/sign-in-with-chatgpt-py/tree/main/chatgpt-auth"
+Changelog = "https://github.com/ftnext/sign-in-with-chatgpt-py/releases"
+Issues = "https://github.com/ftnext/sign-in-with-chatgpt-py/issues"
+CI = "https://github.com/ftnext/sign-in-with-chatgpt-py/actions"
+
+[dependency-groups]
+dev = ["pytest", "ruff", "cryptography"]
