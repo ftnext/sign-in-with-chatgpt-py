@@ -326,3 +326,19 @@ def test_models_file_never_touched(creds_path):
         store.save_credentials({"client_id": "c"})
         store.retire_connection()
     assert json.loads(models.read_text()) == {"models": [{"slug": "m"}]}
+
+
+def test_write_fsyncs_directory(creds_path, monkeypatch):
+    """os.replace is followed by a directory fsync for durability."""
+    import os
+
+    calls = []
+    real_fsync = os.fsync
+
+    def spy(fd):
+        calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(storage.os, "fsync", spy)
+    storage.Store(creds_path).save_credentials({"client_id": "c"})
+    assert len(set(calls)) >= 2

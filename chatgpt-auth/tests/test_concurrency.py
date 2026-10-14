@@ -169,3 +169,37 @@ def test_login_and_refresh_locks_are_independent(creds_path):
         release.set()
         thread.join(10)
     assert errors == []
+
+
+def test_fresh_token_read_waits_for_lock(creds_path):
+    """Even an in-expiry token is re-read under the runtime lock."""
+    storage.Store(creds_path).save_credentials(
+        connected_record(expires_at=time.time() + 3600)
+    )
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with storage.locked_store(creds_path):
+            acquired.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    result = []
+
+    def get():
+        result.append(service.ensure_access_token(creds_path, identity()))
+
+    try:
+        assert acquired.wait(10)
+        getter = threading.Thread(target=get)
+        getter.start()
+        getter.join(1)
+        assert getter.is_alive()
+        release.set()
+        getter.join(10)
+        assert result == ["stored-access"]
+    finally:
+        release.set()
+        holder.join(10)

@@ -142,72 +142,79 @@ def _refresh_locked(store, record, http_factory):
         "resource": "https://api.openai.com/v1",
     }
     factory = http_factory or make_http_client
-    with factory(timeout=HTTP_TIMEOUT_SECONDS) as http:
-        oauth = OAuth(http)
-        try:
-            tokens = oauth.token_request(form)
-        except NetworkError:
-            raise
-        except TokenOutcomeUnknownError as exc:
-            _retire(store)
-            raise ReauthorizationRequiredError(
-                "The token update result is unknown and the connection was "
-                "retired. Run: chatgpt-auth login"
-            ) from exc
-        except AuthError as exc:
-            if str(exc) == "reauthorization_required":
+    try:
+        with factory(timeout=HTTP_TIMEOUT_SECONDS) as http:
+            oauth = OAuth(http)
+            try:
+                tokens = oauth.token_request(form)
+            except NetworkError:
+                raise
+            except TokenOutcomeUnknownError as exc:
                 _retire(store)
                 raise ReauthorizationRequiredError(
-                    "The stored sign-in was revoked. Run: chatgpt-auth login"
+                    "The token update result is unknown and the connection was "
+                    "retired. Run: chatgpt-auth login"
                 ) from exc
-            raise
-        try:
-            if tokens.get("id_token"):
-                identity = oauth.verify(tokens["id_token"], record["client_id"])
-                if identity["sub"] != record["subject"]:
-                    raise AuthError("account_mismatch")
-            update = oauth.credentials(
-                tokens, record.get("scopes"), refresh_response=True
-            )
-        except Exception as exc:
-            # The exchange already happened, so the refresh token may be
-            # consumed: any post-send failure retires the connection.
+            except AuthError as exc:
+                if str(exc) == "reauthorization_required":
+                    _retire(store)
+                    raise ReauthorizationRequiredError(
+                        "The stored sign-in was revoked. Run: chatgpt-auth login"
+                    ) from exc
+                raise
+            try:
+                if tokens.get("id_token"):
+                    identity = oauth.verify(tokens["id_token"], record["client_id"])
+                    if identity["sub"] != record["subject"]:
+                        raise AuthError("account_mismatch")
+                update = oauth.credentials(
+                    tokens, record.get("scopes"), refresh_response=True
+                )
+            except Exception as exc:
+                # The exchange already happened, so the refresh token may be
+                # consumed: any post-send failure retires the connection.
+                _retire(store)
+                raise ReauthorizationRequiredError(
+                    "The token update could not be verified and the connection "
+                    "was retired. Run: chatgpt-auth login"
+                ) from exc
+        if PLAN_SCOPE not in update["scopes"]:
             _retire(store)
             raise ReauthorizationRequiredError(
-                "The token update could not be verified and the connection "
-                "was retired. Run: chatgpt-auth login"
-            ) from exc
-    if PLAN_SCOPE not in update["scopes"]:
-        _retire(store)
-        raise ReauthorizationRequiredError(
-            "The token update dropped ChatGPT plan usage and the connection "
-            "was retired. Run: chatgpt-auth login"
+                "The token update dropped ChatGPT plan usage and the "
+                "connection was retired. Run: chatgpt-auth login"
+            )
+        merged = dict(record)
+        merged.update(
+            access_token=update["access_token"],
+            scopes=update["scopes"],
+            expires_at=update["expires_at"],
+            refresh_token=update["refresh_token"] or record["refresh_token"],
         )
-    merged = dict(record)
-    merged.update(
-        access_token=update["access_token"],
-        scopes=update["scopes"],
-        expires_at=update["expires_at"],
-        refresh_token=update["refresh_token"] or record["refresh_token"],
-    )
-    if tokens.get("id_token"):
-        merged["id_token"] = tokens["id_token"]
-    if "generation" not in merged:
-        merged["generation"] = 1
-    try:
-        store.save_credentials(merged)
-    except StorageError:
-        # The new token must not be returned; do not resend the old one.
+        if tokens.get("id_token"):
+            merged["id_token"] = tokens["id_token"]
+        if "generation" not in merged:
+            merged["generation"] = 1
+        try:
+            store.save_credentials(merged)
+        except StorageError:
+            # The new token must not be returned; do not resend the old one.
+            _retire(store)
+            raise
+    except (KeyboardInterrupt, SystemExit):
+        # Between the request leaving and the save landing the outcome is
+        # unknowable; retire rather than resend a possibly-consumed token.
         _retire(store)
         raise
 
 
 def ensure_access_token(credentials_path, identity, *, http_factory=None) -> str:
-    """Return a usable access token, refreshing under lock when needed."""
+    """Return a usable access token, refreshing under lock when needed.
+
+    The record is always re-read under the runtime lock so a fresh-looking
+    token cannot bypass a concurrent retire or refresh elsewhere.
+    """
     path = Path(credentials_path)
-    record = match_connection(read_record(path), identity)
-    if record["expires_at"] > _now() + REFRESH_MARGIN_SECONDS:
-        return record["access_token"]
     with locked_store(path) as store:
         record = match_connection(store.load_credentials(), identity)
         if record["expires_at"] <= _now() + REFRESH_MARGIN_SECONDS:
@@ -252,6 +259,8 @@ def sign_in(
     factory = http_factory or make_http_client
     open_browser = webbrowser.open if open_browser is None else open_browser
     show_url = _default_show_url if show_url is None else show_url
+    if input_stream is None:
+        input_stream = sys.stdin
     with login_lock(path):
         with locked_store(path) as store:
             existing = store.load_credentials() or {}

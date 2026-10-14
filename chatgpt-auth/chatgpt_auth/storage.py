@@ -188,6 +188,7 @@ def _write_json(path: Path, data: dict, dir_fd: int) -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            os.fsync(dir_fd)
         finally:
             try:
                 os.unlink(name, dir_fd=dir_fd)

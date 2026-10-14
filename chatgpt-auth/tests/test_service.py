@@ -603,3 +603,46 @@ class TestStatus:
         creds_path.write_text("{broken")
         with pytest.raises(StorageError):
             service.connection_status(creds_path)
+
+
+def test_interrupt_during_refresh_retires(creds_path, stored_connection, auth_server):
+    """Ctrl-C mid-refresh: the possibly-consumed token is retired."""
+    import httpx
+
+    storage.Store(creds_path).save_credentials(
+        {**stored_connection, "expires_at": time.time() - 5, "generation": 1}
+    )
+
+    def handler(request):
+        if "token" in str(request.url):
+            raise KeyboardInterrupt
+        return auth_server.handler(request)
+
+    factory = lambda **kw: httpx.Client(transport=httpx.MockTransport(handler), **kw)
+    with pytest.raises(KeyboardInterrupt):
+        service.ensure_access_token(
+            creds_path,
+            identity_of(stored_connection),
+            http_factory=factory,
+        )
+    saved = storage.read_record(creds_path)
+    assert "access_token" not in saved
+
+
+def test_manual_login_reads_stdin_by_default(creds_path, auth_server, monkeypatch):
+    """login(manual=True) without input_stream still accepts TTY paste."""
+    import sys
+
+    tty = FakeTTY()
+    monkeypatch.setattr(sys, "stdin", tty)
+
+    def show(url, browser_failed):
+        paste, nonce = paste_url(url, code="c9", client_id="cli-client")
+        auth_server.nonce_holder["nonce"] = nonce
+        tty.feed(paste)
+
+    try:
+        record = sign_in(creds_path, auth_server, manual=True, show_url=show)
+    finally:
+        tty.close()
+    assert record["client_id"] == "cli-client"
