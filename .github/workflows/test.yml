@@ -6,16 +6,20 @@ on:
     paths:
     - 'llm-chatgpt-plan/**'
     - 'fastapi-chatgpt-plan/**'
+    - 'chatgpt-auth/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
     - '.github/workflows/publish-fastapi.yml'
+    - '.github/workflows/publish-chatgpt-auth.yml'
   pull_request:
     paths:
     - 'llm-chatgpt-plan/**'
     - 'fastapi-chatgpt-plan/**'
+    - 'chatgpt-auth/**'
     - '.github/workflows/test.yml'
     - '.github/workflows/publish.yml'
     - '.github/workflows/publish-fastapi.yml'
+    - '.github/workflows/publish-chatgpt-auth.yml'
 
 permissions:
   contents: read
@@ -30,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: ["llm-chatgpt-plan", "fastapi-chatgpt-plan"]
+        package: ["llm-chatgpt-plan", "fastapi-chatgpt-plan", "chatgpt-auth"]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
