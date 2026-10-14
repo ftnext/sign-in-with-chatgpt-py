@@ -5,6 +5,7 @@ Each package lives in its own directory and has its own version and release tag.
 
 | Directory | Purpose |
 | --- | --- |
+| [chatgpt-auth](chatgpt-auth/README.md) | A CLI and Python API for a stored ChatGPT OAuth connection with automatic token refresh |
 | [llm-chatgpt-plan](llm-chatgpt-plan/README.md) | An [LLM](https://llm.datasette.io/) plugin for single streaming prompts using ChatGPT plan usage |
 | [fastapi-chatgpt-plan](fastapi-chatgpt-plan/README.md) | A standalone FastAPI backend (single local process, same origin) wrapping sign-in, model listing, and Responses streaming |
 | [scripts](scripts/) | Original standalone reference scripts (`auth.py` and `ask.py`, run with `uv run`) |
@@ -29,7 +30,7 @@ migrated between any of them.
 For package development, run commands from the package directory:
 
 ```bash
-cd llm-chatgpt-plan        # or: cd fastapi-chatgpt-plan
+cd llm-chatgpt-plan        # or: cd fastapi-chatgpt-plan / cd chatgpt-auth
 uv run pytest
 uv run ruff check .
 uv build
@@ -52,3 +53,6 @@ stored.
 
 The first package release tag is `llm-chatgpt-plan-0.1.0`. Publishing the
 corresponding GitHub Release triggers the package's release workflow.
+`chatgpt-auth` uses independent tags named `chatgpt-auth-<version>` and
+the `publish-chatgpt-auth.yml` workflow; see its
+[release instructions](chatgpt-auth/README.md#releases) for PyPI setup.

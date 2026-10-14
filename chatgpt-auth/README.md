@@ -137,3 +137,23 @@ Exceptions (`chatgpt_auth` namespace): `SignInRequiredError`,
 `ReauthorizationRequiredError`, `ConnectionChangedError`,
 `PlanPermissionError`, `NetworkError`, `StorageError`, `LoginTimeoutError`,
 `AuthError`, and the base `ChatGPTAuthError`.
+
+## Development
+
+Run from this package directory:
+
+```console
+$ uv sync
+$ uv run pytest
+$ uv run ruff check .
+$ uv build
+```
+
+## Releases
+
+Publish a GitHub Release tagged `chatgpt-auth-<version>` matching
+`project.version` in `pyproject.toml`. The first release tag is
+`chatgpt-auth-0.1.0`. The `publish-chatgpt-auth.yml` workflow verifies the
+tag, tests Python 3.11–3.14, builds this package's wheel and sdist, and
+publishes them to PyPI using Trusted Publishing. Releases for other
+packages are skipped.
