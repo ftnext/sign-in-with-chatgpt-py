@@ -220,4 +220,5 @@ __marimo__/
 # Sign in with ChatGPT
 .chatgpt-script/
 .DS_Store
-uv.lock
+# Legacy lockfile at the repository root (no pyproject.toml lives there).
+/uv.lock

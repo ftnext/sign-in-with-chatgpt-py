@@ -36,6 +36,13 @@ uv run ruff check .
 uv build
 ```
 
+Commit each package's `uv.lock` to keep development environments reproducible.
+Use `uv sync --locked` or `uv run --locked pytest` to verify that the lockfile
+matches `pyproject.toml`. After changing dependencies, run `uv lock` in that
+package directory and commit the updated lockfile with `pyproject.toml`.
+The CI test matrix installs from `pyproject.toml` with pip, so it continues to
+exercise dependency resolution independently of these development lockfiles.
+
 Run the FastAPI backend locally:
 
 ```bash
