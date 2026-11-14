@@ -14,16 +14,16 @@ info:
 
     1. `GET /.well-known/openid-configuration` and `GET /.well-known/jwks.json`
        (the actual URLs come from discovery metadata).
-    2. Open `GET /oauth/authorize` in the user's browser with PKCE (`S256`).
+    2. Open `GET /api/accounts/authorize` in the user's browser with PKCE (`S256`).
        The first sign-in uses `client_id=dynamic_agent_client`; the issued
        client ID comes back in the redirect query (`client_id`).
     3. The browser is redirected to the client's `redirect_uri`
        (`AuthorizationCallback`).
-    4. `POST /oauth/token` with `grant_type=authorization_code`, then verify
+    4. `POST /api/accounts/oauth/token` with `grant_type=authorization_code`, then verify
        the returned ID token (RS256, `iss`, `aud`/`azp` = client ID, `nonce`).
     5. Call `api.openai.com/v1` with the access token as a Bearer token.
        Refresh with `grant_type=refresh_token` shortly before `expires_in`.
-    6. `POST /oauth/revoke` with the refresh token to sign out.
+    6. `POST /api/accounts/oauth/revoke` with the refresh token to sign out.
 
     Steps that OpenAPI cannot express (browser navigation, PKCE and nonce
     generation, ID token verification, refresh timing) are described in
@@ -61,7 +61,7 @@ paths:
       tags: [discovery]
       operationId: getJwks
       summary: Signing keys for ID tokens
-      description: Use the `jwks_uri` from discovery; this path is the usual value.
+      description: Use the `jwks_uri` from discovery; this path matches the published discovery metadata.
       responses:
         "200":
           description: JSON Web Key Set
@@ -69,15 +69,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JsonWebKeySet"
-  /oauth/authorize:
+  /api/accounts/authorize:
     get:
       tags: [oauth]
       operationId: authorize
       summary: Authorization endpoint (open in a browser)
       description: |
         Not called by an HTTP client: build this URL and open it in the user's
-        browser. Use the `authorization_endpoint` from discovery; this path is
-        the usual value. The result is delivered to `redirect_uri`
+        browser. Use the `authorization_endpoint` from discovery; this path matches the
+        published discovery metadata. The result is delivered to `redirect_uri`
         (see `AuthorizationCallback` in `components.pathItems`).
       parameters:
         - name: client_id
@@ -160,12 +160,12 @@ paths:
       responses:
         "302":
           description: Redirect to the sign-in and consent UI, then to `redirect_uri`.
-  /oauth/token:
+  /api/accounts/oauth/token:
     post:
       tags: [oauth]
       operationId: token
       summary: Token endpoint
-      description: Use the `token_endpoint` from discovery; this path is the usual value.
+      description: Use the `token_endpoint` from discovery; this path matches the published discovery metadata.
       requestBody:
         required: true
         content:
@@ -190,14 +190,14 @@ paths:
           $ref: "#/components/responses/OAuthError"
         "401":
           $ref: "#/components/responses/OAuthError"
-  /oauth/revoke:
+  /api/accounts/oauth/revoke:
     post:
       tags: [oauth]
       operationId: revoke
       summary: Revoke a refresh token (sign out)
       description: |
-        Use the `revocation_endpoint` from discovery when present; this path is
-        the usual value. Only an empty `200` confirms revocation.
+        Use the `revocation_endpoint` from discovery when present; this path matches the
+        published discovery metadata. Only an empty `200` confirms revocation.
       requestBody:
         required: true
         content:
@@ -275,12 +275,12 @@ components:
       description: |
         Authorization code flow with PKCE (`S256`). Every authorization request
         also needs `resource=https://api.openai.com/v1`, `nonce`, and
-        `ext_agent_host_id`; see `/oauth/authorize`.
+        `ext_agent_host_id`; see `/api/accounts/authorize`.
       flows:
         authorizationCode:
-          authorizationUrl: https://auth.openai.com/oauth/authorize
-          tokenUrl: https://auth.openai.com/oauth/token
-          refreshUrl: https://auth.openai.com/oauth/token
+          authorizationUrl: https://auth.openai.com/api/accounts/authorize
+          tokenUrl: https://auth.openai.com/api/accounts/oauth/token
+          refreshUrl: https://auth.openai.com/api/accounts/oauth/token
           scopes:
             openid: OpenID Connect sign-in
             profile: Name in the ID token

@@ -14,9 +14,9 @@ OpenAI-published contract, and only covers the fields this repository uses.
 | --- | --- | --- |
 | `https://auth.openai.com` | `GET /.well-known/openid-configuration` | Discovery metadata |
 | `https://auth.openai.com` | `GET /.well-known/jwks.json` | ID token signing keys |
-| `https://auth.openai.com` | `GET /oauth/authorize` | Authorization URL (opened in a browser) |
-| `https://auth.openai.com` | `POST /oauth/token` | `authorization_code` and `refresh_token` grants |
-| `https://auth.openai.com` | `POST /oauth/revoke` | Refresh token revocation |
+| `https://auth.openai.com` | `GET /api/accounts/authorize` | Authorization URL (opened in a browser) |
+| `https://auth.openai.com` | `POST /api/accounts/oauth/token` | `authorization_code` and `refresh_token` grants |
+| `https://auth.openai.com` | `POST /api/accounts/oauth/revoke` | Refresh token revocation |
 | `https://api.openai.com/v1` | `GET /models` | Models available to the ChatGPT plan |
 | `https://api.openai.com/v1` | `POST /responses` | Streamed Responses API (SSE) |
 
@@ -36,8 +36,13 @@ A generated client handles the HTTP calls; a hand-written layer still has to:
 - Use `client_id=dynamic_agent_client` for the first sign-in, take the issued
   client ID from the callback query, and use it for every later token,
   refresh, and revocation request.
-- Use endpoint URLs from discovery (the paths in the spec are the usual
-  values) and reject any that are not `https://auth.openai.com`.
+- Check discovery and reject endpoints that are not `https://auth.openai.com`.
+  The spec's paths match OpenAI's
+  [Registration and sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+  guide and the published discovery metadata, and generated clients hard-code
+  them. If discovery ever reports a different `authorization_endpoint`,
+  `token_endpoint`, or `revocation_endpoint`, fail or update the spec instead
+  of calling the generated operation.
 - Verify the ID token: RS256 via JWKS (refetch once on an unknown `kid`),
   `iss`, `aud`/`azp` equal to the client ID, `nonce`, and a non-empty `sub`
   that must not change between refreshes.
