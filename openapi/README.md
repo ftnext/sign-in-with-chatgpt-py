@@ -52,6 +52,10 @@ A generated client handles the HTTP calls; a hand-written layer still has to:
 - Parse the `text/event-stream` body of `/responses` into
   `ResponseStreamEvent`s (referenced as `x-event-schema`) and treat a stream
   without `response.completed` as a failure.
+- Stream the `/responses` body. Some generators (for example
+  `openapi-python-client`) read the whole response before returning it, so
+  showing output as it arrives also needs a streaming HTTP call in place of
+  the generated one, not just an SSE parser.
 
 Some generators ignore path-level `servers`; if yours does, set the base URL
 to `https://api.openai.com/v1` for the `inference` tag.

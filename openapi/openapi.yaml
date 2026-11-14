@@ -521,7 +521,8 @@ components:
           type: object
           properties:
             effort:
-              enum: [minimal, low, medium, high]
+              description: Supported values depend on the model.
+              enum: [none, minimal, low, medium, high, xhigh, max]
         store:
           const: false
         stream:
