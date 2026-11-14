@@ -8,6 +8,7 @@ Each package lives in its own directory and has its own version and release tag.
 | [chatgpt-auth](chatgpt-auth/README.md) | A CLI and Python API for a stored ChatGPT OAuth connection with automatic token refresh |
 | [llm-chatgpt-plan](llm-chatgpt-plan/README.md) | An [LLM](https://llm.datasette.io/) plugin for single streaming prompts using ChatGPT plan usage |
 | [fastapi-chatgpt-plan](fastapi-chatgpt-plan/README.md) | A standalone FastAPI backend (single local process, same origin) wrapping sign-in, model listing, and Responses streaming |
+| [openapi](openapi/README.md) | An OpenAPI 3.1 description of the sign-in and plan inference endpoints, for generating clients in other languages |
 | [scripts](scripts/) | Original standalone reference scripts (`auth.py` and `ask.py`, run with `uv run`) |
 
 Install the plugin from this checkout:
